@@ -1,0 +1,17 @@
+pydantic
+langextract
+httpx
+requests
+tqdm
+chardet
+pypdf
+jinja2
+pandas
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+alembic
+supabase
+python-dotenv
+oss2

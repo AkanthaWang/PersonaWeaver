@@ -1,0 +1,399 @@
+<template>
+  <div class="chat-page">
+    <div class="page-head chat-head">
+      <div>
+        <h3 class="page-title">LLM 交互</h3>
+        <p class="page-subtitle">围绕角色设定进行多轮对话，支持本地会话历史持久化。</p>
+      </div>
+      <span class="pill-tag">Conversation</span>
+    </div>
+
+    <div class="chat-shell">
+      <div class="chat-topbar">
+        <div class="topbar-left">
+          <h3 class="chat-title">对话窗口</h3>
+          <!-- <el-avatar class="role-avatar" :size="24" :src="roleAvatar">{{ roleName.slice(0, 1) }}</el-avatar>
+          <el-text class="role-name">{{ roleName }}</el-text> -->
+          <el-tag type="info" effect="plain">模型：{{ settingsStore.settings.model }}</el-tag>
+        </div>
+        <el-button plain @click="clearConversation">清空会话</el-button>
+      </div>
+
+      <div ref="messagesRef" class="chat-stream">
+        <div class="stream-inner">
+          <el-empty v-if="messages.length === 0 && !pending" description="开始提问吧，Enter 发送，Shift+Enter 换行" />
+
+          <div v-for="(msg, idx) in messages" :key="`${msg.role}-${idx}`" :class="['msg-row', msg.role]">
+            <div v-if="msg.role === 'assistant'" class="msg-avatar">AI</div>
+            <el-avatar v-else class="msg-avatar" :src="roleAvatar">{{ userName.slice(0, 1) }}</el-avatar>
+            <div class="msg-bubble">
+              <MarkdownRender
+                v-if="msg.role === 'assistant'"
+                class="msg-content assistant-markdown"
+                :content="msg.content"
+                :typewriter="false"
+              />
+              <div v-else class="msg-content user-text">{{ msg.content }}</div>
+            </div>
+          </div>
+
+          <div v-if="pending" class="msg-row assistant">
+            <div class="msg-avatar">AI</div>
+            <div class="msg-bubble thinking">
+              <div class="msg-content">正在思考中...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer-card">
+          <el-input
+            v-model="input"
+            type="textarea"
+            :rows="2"
+            resize="none"
+            placeholder="给 AI 发送消息..."
+            :disabled="pending"
+            @keydown.enter="onEnter"
+          />
+          <div class="action-row">
+            <el-text type="info" size="small">Shift + Enter 换行</el-text>
+            <el-button type="primary" :loading="pending" :disabled="!input.trim()" @click="send">发送</el-button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, nextTick, ref, watch } from "vue";
+import { ElMessage } from "element-plus";
+import { api } from "../api/client";
+import { useSettingsStore } from "../stores/settings";
+import { MarkdownRender } from "vue-renderer-markdown";
+import "vue-renderer-markdown/index.css";
+
+defineOptions({
+  name: "ChatPage",
+});
+
+const CHAT_HISTORY_KEY = "novelweaver_chat_history";
+
+const settingsStore = useSettingsStore();
+const userName = computed(() => settingsStore.settings.user_name?.trim() || "用户");
+const roleName = computed(() => settingsStore.settings.custom_role_name?.trim() || "助手");
+const roleAvatar = computed(() => settingsStore.settings.custom_role_avatar || "");
+const rolePrompt = computed(() => settingsStore.settings.custom_role_prompt?.trim() || "");
+
+const input = ref("");
+const messages = ref(loadHistory());
+const pending = ref(false);
+const messagesRef = ref(null);
+
+watch(
+  messages,
+  (next) => {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(next));
+  },
+  { deep: true },
+);
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item) =>
+        item &&
+        (item.role === "user" || item.role === "assistant") &&
+        typeof item.content === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function clearConversation() {
+  messages.value = [];
+  localStorage.removeItem(CHAT_HISTORY_KEY);
+}
+
+function onEnter(event) {
+  if (event.shiftKey) return;
+  event.preventDefault();
+  void send();
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text || pending.value) return;
+
+  const userMsg = { role: "user", content: text };
+  const history = [...messages.value, userMsg];
+  messages.value = history;
+  input.value = "";
+  pending.value = true;
+  await scrollToBottom();
+
+  try {
+    const res = await api.chat(
+      {
+        message: text,
+        history,
+        model: settingsStore.settings.model,
+        temperature: settingsStore.settings.temperature,
+        top_p: settingsStore.settings.top_p,
+        max_tokens: settingsStore.settings.max_tokens,
+        context_length: settingsStore.settings.context_length,
+        repetition_penalty: settingsStore.settings.repetition_penalty,
+        chapter_limit: settingsStore.settings.chapter_limit,
+        use_chapter_context: settingsStore.settings.use_chapter_context,
+        system_prompt: rolePrompt.value || `你是${roleName.value}，请保持专业、友好、准确。`,
+      },
+      settingsStore.settings,
+    );
+
+    messages.value = [...messages.value, { role: "assistant", content: res.response }];
+    await scrollToBottom();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "发送失败");
+  } finally {
+    pending.value = false;
+  }
+}
+
+async function scrollToBottom() {
+  await nextTick();
+  if (messagesRef.value) {
+    messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
+  }
+}
+</script>
+
+<style scoped>
+.chat-page {
+  height: calc(100dvh - 32px);
+  --surface: #ffffff;
+  --surface-soft: #f8fbff;
+  --line: #dbe3ef;
+  --text-muted: #64748b;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.chat-head {
+  flex: 0 0 auto;
+}
+
+.chat-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #f9fcff 0%, #eef4fb 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.chat-topbar {
+  padding: 5px 15px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-avatar {
+  border: 1px solid #c8d8ff;
+}
+
+.role-name {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.chat-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chat-stream {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 20px;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(59, 130, 246, 0.06) 0%, transparent 25%),
+    radial-gradient(circle at 90% 85%, rgba(14, 165, 233, 0.08) 0%, transparent 30%),
+    linear-gradient(180deg, #f9fcff 0%, #eef4fb 100%);
+}
+
+.stream-inner {
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 22px 6px 26px;
+}
+
+.msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.msg-row.user {
+  justify-content: flex-end;
+}
+
+.msg-row.user .msg-avatar {
+  order: 2;
+}
+
+.msg-row.user .msg-bubble {
+  order: 1;
+}
+
+.msg-row.assistant {
+  justify-content: flex-start;
+}
+
+.msg-avatar {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #334155;
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 2px 8px rgba(30, 41, 59, 0.08);
+}
+
+.msg-row.user .msg-avatar {
+  color: #1e3a8a;
+  background: #dbeafe;
+  border-color: #bfdbfe;
+}
+
+.msg-bubble {
+  max-width: min(88%, 1180px);
+  border-radius: 16px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+}
+
+.msg-row.user .msg-bubble {
+  background: #eaf1ff;
+  border-color: #c8d8ff;
+}
+
+.msg-content {
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.assistant-markdown :deep(.markdown-renderer) {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.assistant-markdown :deep(pre) {
+  border-radius: 10px;
+}
+
+.user-text {
+  white-space: pre-wrap;
+}
+
+.thinking {
+  color: var(--text-muted);
+}
+
+.composer-wrap {
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  padding: 8px 16px 10px;
+}
+
+.composer-card {
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-soft);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  padding: 6px 8px;
+}
+
+.composer-card :deep(.el-textarea__inner) {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.composer-card :deep(.el-textarea__inner:focus) {
+  box-shadow: none;
+}
+
+.action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 2px;
+  padding: 1px 4px 0 6px;
+  font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .chat-page {
+    height: calc(100dvh - 32px);
+  }
+
+  .chat-stream,
+  .composer-wrap {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .stream-inner {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .msg-bubble {
+    max-width: 92%;
+  }
+
+  .chat-title {
+    font-size: 13px;
+  }
+}
+</style>

@@ -1,0 +1,12 @@
+{
+  "source_path": "examples/inputs/demo_short_story.txt",
+  "source_type": "txt",
+  "source_file_id": "sf_demo_public_001",
+  "file_name": "demo_short_story.txt",
+  "book_id": "book_demo_public_001",
+  "book_title": "公开演示短篇",
+  "filter_noise": true,
+  "upload_chapters_to_remote": false,
+  "upload_summary_to_remote": false,
+  "upload_card_to_remote": false
+}
