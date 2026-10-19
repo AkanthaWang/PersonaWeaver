@@ -66,12 +66,32 @@
     </article>
   </section>
 
-  <section v-else-if="tab === 'relations'" class="knowledge-card relation-list">
-    <el-empty v-if="!filteredRelations.length" description="暂无人物关系" />
-    <article v-for="relation in filteredRelations" :key="relation.id" class="relation-record">
-      <div><strong>{{ relation.subject_id }}</strong><span class="relation-arrow">→</span><strong>{{ relation.object_id }}</strong><small>{{ relation.relation_type }}</small></div>
-      <div><el-button v-if="relation.evidence_id" link type="primary" @click="openCitation(relation)">原文</el-button><el-button link type="danger" @click="removeRelation(relation)">删除</el-button></div>
-    </article>
+  <section v-else-if="tab === 'relations'" class="knowledge-card relation-panel">
+    <div class="relation-toolbar">
+      <el-radio-group v-model="relationView" size="small">
+        <el-radio-button value="graph">关系图谱</el-radio-button>
+        <el-radio-button value="list">关系列表</el-radio-button>
+      </el-radio-group>
+      <span class="muted">{{ filteredRelations.length }} 条关系 · {{ characterNameCount }} 位人物</span>
+    </div>
+
+    <div v-show="relationView === 'graph'" class="relation-graph-wrap">
+      <el-empty v-if="!filteredRelations.length" description="暂无可展示的人物关系" />
+      <div v-show="filteredRelations.length" ref="graphEl" class="relation-graph"></div>
+      <p v-if="filteredRelations.length" class="graph-hint muted">拖拽节点可调整位置，滚轮缩放画布，拖拽空白处平移。</p>
+    </div>
+
+    <div v-show="relationView === 'list'">
+      <el-empty v-if="!filteredRelations.length" description="暂无人物关系" />
+      <article v-for="relation in filteredRelations" :key="relation.id" class="relation-record">
+        <div>
+          <strong>{{ characterName(relation.subject_id) }}</strong>
+          <el-tag size="small" effect="plain" class="relation-type">{{ relation.relation_type || '相关' }}</el-tag>
+          <strong>{{ characterName(relation.object_id) }}</strong>
+        </div>
+        <div><el-button v-if="relation.evidence_id" link type="primary" @click="openCitation(relation)">原文</el-button><el-button link type="danger" @click="removeRelation(relation)">删除</el-button></div>
+      </article>
+    </div>
   </section>
 
   <section v-else-if="tab === 'clues'" class="knowledge-grid">
@@ -100,9 +120,10 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Download, Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { Graph } from "@antv/g6";
 import BookPicker from "../../../components/BookPicker.vue";
 import ChapterReader from "../components/ChapterReader.vue";
 import { api } from "../../../api/client.js";
@@ -113,6 +134,12 @@ const workspace = useWorkspaceStore();
 const bookId = ref(""), tab = ref("characters"), query = ref(""), loading = ref(false), error = ref("");
 const characters = ref([]), facts = ref([]), events = ref([]), relations = ref([]), clues = ref([]), reviews = ref([]);
 const factsLoading = reactive({}), expandedCharacters = reactive(new Set()), showReader = ref(false), citation = ref(null);
+const relationView = ref("graph"), graphEl = ref(null);
+let relationGraph = null;
+const GRAPH_COLORS = ["#2f6f5e", "#3c7a9c", "#8a6bb1", "#b1734a", "#9c5a75", "#5c7d3e", "#a3893a", "#4f6e91"];
+const characterName = (id) => characters.value.find((item) => item.id === id)?.canonical_name || id;
+const characterNameCount = computed(() => new Set(filteredRelations.value.flatMap((item) => [item.subject_id, item.object_id])).size);
+const relationColor = (type) => GRAPH_COLORS[[...String(type || "")].reduce((sum, char) => sum + char.codePointAt(0), 0) % GRAPH_COLORS.length];
 const text = (value) => String(value || "").toLocaleLowerCase();
 const matches = (value) => !query.value.trim() || text(value).includes(text(query.value.trim()));
 const filteredCharacters = computed(() => characters.value.filter((item) => matches(`${item.canonical_name} ${aliases(item.aliases_json)}`)));
@@ -125,6 +152,61 @@ function toggleCharacter(id) {
   else expandedCharacters.add(id);
 }
 function aliases(value) { try { return JSON.parse(value || "[]").join("、"); } catch { return ""; } }
+
+async function renderRelationGraph() {
+  if (tab.value !== "relations" || relationView.value !== "graph") return;
+  await nextTick();
+  const container = graphEl.value;
+  if (!container) return;
+  relationGraph?.destroy();
+  relationGraph = null;
+  if (!filteredRelations.value.length) return;
+
+  const visibleIds = new Set(filteredRelations.value.flatMap((item) => [item.subject_id, item.object_id]));
+  const nodes = characters.value.filter((item) => visibleIds.has(item.id)).map((item) => ({
+    id: item.id,
+    style: {
+      labelText: item.canonical_name,
+      size: Math.min(64, 32 + Math.sqrt(item.frequency || 0) * 4),
+      fill: "#eaf4f0",
+      stroke: "#2f6f5e",
+      lineWidth: 1.5,
+      labelPlacement: "bottom",
+      labelFill: "#1d3b33",
+      labelFontSize: 12,
+      cursor: "pointer",
+    },
+  }));
+  const edges = filteredRelations.value.map((item) => ({
+    id: item.id,
+    source: item.subject_id,
+    target: item.object_id,
+    style: {
+      labelText: item.relation_type || "",
+      stroke: relationColor(item.relation_type),
+      lineWidth: 1.6,
+      endArrow: true,
+      endArrowSize: 8,
+      labelFontSize: 10,
+      labelFill: "#4b635a",
+      labelBackground: true,
+      labelBackgroundFill: "#ffffff",
+      labelBackgroundOpacity: 0.85,
+      labelPadding: [1, 3],
+    },
+  }));
+
+  relationGraph = new Graph({
+    container,
+    autoResize: true,
+    data: { nodes, edges },
+    node: { type: "circle" },
+    layout: { type: "force", preventOverlap: true, nodeSize: 48, linkDistance: 160, collideStrength: 0.9 },
+    behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+  });
+  await relationGraph.render();
+  relationGraph.fitView();
+}
 function displayValue(value) { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed.join("、") : typeof parsed === "object" ? JSON.stringify(parsed) : parsed; } catch { return value; } }
 function reviewText(value) { try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; } }
 async function load() {
@@ -164,6 +246,9 @@ async function resolveReview(row, action) { try { await api.post(`/books/${bookI
 function openCharacterFacts(row) { tab.value = "characters"; query.value = row.canonical_name; }
 function exportData() { const data = JSON.stringify({ characters: characters.value, facts: facts.value, events: events.value, relations: relations.value, clues: clues.value }, null, 2); const blob = new Blob([data], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "knowledge.json"; link.click(); URL.revokeObjectURL(link.href); }
 watch(() => workspace.selectedId, (value) => { bookId.value = value || ""; load(); }, { immediate: true });
+watch([tab, relationView], () => renderRelationGraph());
+watch(filteredRelations, () => renderRelationGraph());
+onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 </script>
 
 <style scoped>
@@ -191,6 +276,12 @@ watch(() => workspace.selectedId, (value) => { bookId.value = value || ""; load(
 .relation-record { padding:14px 0; border-bottom:1px solid #edf1ee; }
 .relation-record small { display:block; color:#718078; margin-top:5px; }
 .relation-arrow { margin:0 10px; color:#70958a; }
+.relation-panel { padding:18px; }
+.relation-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.relation-type { margin:0 10px; }
+.relation-graph { width:100%; height:560px; border-radius:10px; background:#f7fbf9; border:1px solid #e6efea; }
+.graph-hint { margin:8px 0 0; font-size:12px; }
+.relation-graph-wrap { margin-top:8px; }
 .quote-text { padding:12px; background:#f6faf7; border-left:3px solid #82ad9d; color:#4d6258; }
 .review-row p { white-space:pre-wrap; max-width:700px; color:#53645c; }
 @media (max-width:700px) { .knowledge-summary-head { display:block; } .knowledge-metrics { margin-top:16px; } .fact-row,.review-row { display:block; } .fact-actions { margin-top:8px; } }

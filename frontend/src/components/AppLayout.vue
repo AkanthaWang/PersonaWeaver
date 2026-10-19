@@ -21,7 +21,7 @@
 <script setup>
 import { onMounted } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { ArrowRight, ChatLineRound, Collection, Document, House, Upload, DataAnalysis } from "@element-plus/icons-vue";
+import { ArrowRight, ChatLineRound, Collection, Document, House, Upload } from "@element-plus/icons-vue";
 import { useAuthStore } from "../stores/auth.js";
 import defaultAvatar from "../assets/avatar.png";
 import logo from "../assets/logo.png";
@@ -32,7 +32,6 @@ const navigation = [
   { path: "/upload", label: "作品库", icon: Upload },
   { path: "/summary", label: "故事资料", icon: Document },
   { path: "/characters", label: "角色库", icon: Collection },
-  { path: "/knowledge", label: "知识库", icon: DataAnalysis },
   { path: "/chat", label: "角色对话", icon: ChatLineRound },
 ];
 onMounted(async () => { if (!profile.loaded) { try { await profile.fetchMe(); } catch (error) { report(error); } } });

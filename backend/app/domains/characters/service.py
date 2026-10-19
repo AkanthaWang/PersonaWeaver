@@ -5,7 +5,6 @@ import sqlite3
 from fastapi import HTTPException
 
 from backend.app.db.database import identifier, now
-from .schemas import Character, Relation
 
 from .repository import CharacterRepository
 
@@ -101,32 +100,3 @@ class CharacterService:
 
     def export(self, user_id: str, card_id: str):
         return self.owned(user_id, card_id)
-
-    def get_characters(self, user_id: str, book_id: str):
-        """获取指定书籍的人物列表"""
-        if not self.repo.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
-            raise HTTPException(404, "书籍不存在")
-        
-        characters = self.repo.all("""
-            SELECT id, book_id, canonical_name, aliases_json, frequency, state, created_at, updated_at
-            FROM knowledge_characters 
-            WHERE book_id=? AND state='active'
-            ORDER BY frequency DESC, canonical_name
-        """, (book_id,))
-        
-        return [Character(**char) for char in characters]
-    
-    def get_relations(self, user_id: str, book_id: str):
-        """获取指定书籍的人物关系列表"""
-        if not self.repo.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
-            raise HTTPException(404, "书籍不存在")
-        
-        relations = self.repo.all("""
-            SELECT id, book_id, subject_type, subject_id, relation_type, 
-                   object_type, object_id, value_json, state, created_at, updated_at
-            FROM knowledge_relations 
-            WHERE book_id=? AND state='active'
-            ORDER BY created_at DESC
-        """, (book_id,))
-        
-        return [Relation(**rel) for rel in relations]
