@@ -14,7 +14,7 @@
       </div>
     </aside>
     <div class="main-content" :class="{ 'main-content-chat': route.path === '/chat' }">
-      <header class="topbar"><div class="breadcrumb"><RouterLink to="/dashboard">工作区</RouterLink><el-icon><ArrowRight /></el-icon><strong>{{ pageTitle }}</strong></div><div class="topbar-actions"><span class="local-chip"><el-icon><FolderOpened /></el-icon>本地工作区</span><RouterLink to="/upload" class="topbar-create">＋ 导入作品</RouterLink></div></header>
+      <header class="topbar"><div class="topbar-actions"><span class="local-chip"><el-icon><FolderOpened /></el-icon>本地工作区</span><RouterLink to="/upload" class="topbar-create">＋ 导入作品</RouterLink></div></header>
       <main class="page-body" :class="{ 'page-body-chat': route.path === '/chat' }"><slot /></main>
     </div>
   </div>
@@ -35,6 +35,5 @@ const navigation = [
   { path: "/characters", label: "角色库", icon: Collection },
   { path: "/chat", label: "角色对话", icon: ChatLineRound },
 ];
-const pageTitle = computed(() => navigation.find((item) => item.path === route.path)?.label || "偏好设置");
 onMounted(async () => { if (!profile.loaded) { try { await profile.fetchMe(); } catch (error) { report(error); } } });
 </script>

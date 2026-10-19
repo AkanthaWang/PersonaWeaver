@@ -1,5 +1,5 @@
 <template>
-  <header class="page-header"><div><h1>角色卡</h1><p class="muted">{{ cards.length }} 张角色卡</p></div><el-button type="primary" :icon="Plus" :disabled="!workspace.selectedId" @click="openEditor()">新建角色卡</el-button></header>
+  <header class="page-header page-header-compact"><el-button type="primary" :icon="Plus" :disabled="!workspace.selectedId" @click="openEditor()">新建角色卡</el-button></header>
   <div class="toolbar"><BookPicker /><el-input v-model="query" placeholder="搜索角色" :prefix-icon="Search" clearable /><el-button :icon="Refresh" :loading="loading" @click="load" /></div>
   <section v-loading="loading">
     <el-empty v-if="!visible.length && !loading" description="暂无角色卡" />

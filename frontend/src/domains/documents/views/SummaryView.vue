@@ -1,5 +1,5 @@
 <template>
-  <header class="page-header"><div><h1>作品资料</h1><p class="muted">已提取 {{ coverage.length }} / {{ workspace.selected?.chapter_count || 0 }} 个章节 · 版本 {{ revision }}</p><p v-if="coverage.length" class="coverage">覆盖章节：{{ formatCoverage(coverage) }}</p></div><BookPicker /></header>
+  <header class="page-header page-header-compact"><BookPicker /></header>
   <div class="toolbar"><el-input v-model="query" placeholder="搜索名称或资料" :prefix-icon="Search" clearable /><el-button :icon="Refresh" :loading="loading" @click="load" aria-label="刷新资料" /><el-button :icon="Connection" :loading="rebuilding" :disabled="!coverage.length || resolving" @click="rebuild">整理已有资料</el-button><el-button :icon="Download" :disabled="!summaries.length" @click="exportData">导出资料</el-button></div>
   <div class="chapter-filter">
     <el-select v-model="sourceChapter" clearable filterable placeholder="全部来源章节" aria-label="来源章节"><el-option v-for="number in coverage" :key="number" :label="`第 ${number} 章`" :value="number" /></el-select>

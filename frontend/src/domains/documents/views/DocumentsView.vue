@@ -1,6 +1,5 @@
 <template>
-  <header class="page-header">
-    <div><h1>作品库</h1><p class="muted">{{ workspace.books.length }} 部作品</p></div>
+  <header class="page-header page-header-compact">
     <el-button type="primary" :icon="Upload" @click="openUpload">上传作品</el-button>
   </header>
   <div class="toolbar"><el-input v-model="query" placeholder="搜索作品或作者" :prefix-icon="Search" clearable /><el-button :icon="Refresh" :loading="workspace.loading" @click="refresh" aria-label="刷新作品" /></div>
