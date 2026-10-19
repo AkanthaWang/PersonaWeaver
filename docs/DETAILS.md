@@ -262,3 +262,25 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/books?filename=story.txt" `
 人物关系以实体 ID 区分节点，按当前人物指向关系目标保留方向，重复关系汇总来源。同名目标有多个候选时显示独立的“同名待确认”节点，不自动连到某一份档案。仅有关系名称但没有对应档案的目标显示为未建档节点。关系来源按所选章节筛选，可直接回查原文；档案、时间线和场景视图统一响应搜索与来源筛选，资料仍是累计视图。
 
 提取弹窗显示选定范围及已覆盖、尚未覆盖数量；覆盖不代表检查点一定可复用，模型、原文和版本指纹仍决定实际复用。任务详情显示动作统计、异常筛选、可读章节与字符范围、事实数量、实际恢复动作及资料入口；`GET /tasks/{id}/units` 额外返回 `chapter_no`、`chapter_title`、`recovery_tool`，不返回模型载荷。
+## 6. 知识库 CRUD 与生命周期
+
+知识库数据存储在每本作品的 `extraction.sqlite3` 中。原文证据表
+`knowledge_evidence` 不随知识编辑覆盖；人物、人物事实、事件、线索和关系使用当前状态字段、版本字段及软删除字段管理。
+
+当前已提供知识库 API：
+
+- `/api/v1/books/{book_id}/knowledge/characters`
+- `/api/v1/books/{book_id}/knowledge/characters/{character_id}/facts`
+- `/api/v1/books/{book_id}/knowledge/events`
+- `/api/v1/books/{book_id}/knowledge/clues`
+- `/api/v1/books/{book_id}/knowledge/changes`
+
+Agent 或用户创建的事实必须尽可能绑定章节证据。事实更新会创建新版本并将旧版本标记为
+`superseded`；删除默认只从当前视图移除，变更记录写入 `knowledge_changes`。人物支持软删除和恢复。
+默认查询只返回未删除的当前记录，审计查询通过变更日志查看历史。
+
+关系支持创建、读取、修改和软删除；人物支持合并及撤销合并；提取任务发布时会把 Agent
+变更写入批次号，可通过 `/api/v1/books/{book_id}/knowledge/batches/{batch_id}/rollback` 回滚该批次。
+无法解析关系目标的人物会进入 `knowledge_reviews`，可在知识库页面或审核 API 中处理。
+伏笔可通过 `/api/v1/books/{book_id}/knowledge/clues/{clue_id}/verify` 从候选状态转为
+`revealed`。前端知识库入口为 `/knowledge`。

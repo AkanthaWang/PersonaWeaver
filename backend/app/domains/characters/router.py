@@ -5,7 +5,7 @@ from fastapi.responses import Response
 
 from backend.app.core.dependencies import current_user, get_db
 
-from .schemas import CardCreate, CardUpdate
+from .schemas import CardCreate, CardUpdate, CharacterListResponse, RelationListResponse
 from .service import CharacterService
 
 router = APIRouter()
@@ -36,3 +36,17 @@ def export_card(card_id: str, user=Depends(current_user), db=Depends(get_db)):
     card = CharacterService(db).export(user["user_id"], card_id)
     return Response(card["content"], media_type="text/markdown",
                     headers={"Content-Disposition": f'attachment; filename="{card_id}.md"'})
+
+
+@router.get("/knowledge/characters")
+def list_characters_knowledge(book_id: str, user=Depends(current_user), db=Depends(get_db)):
+    """获取知识库中的人物列表"""
+    characters = CharacterService(db).get_characters(user["user_id"], book_id)
+    return CharacterListResponse(characters=characters)
+
+
+@router.get("/knowledge/relations")
+def list_relations_knowledge(book_id: str, user=Depends(current_user), db=Depends(get_db)):
+    """获取知识库中的人物关系列表"""
+    relations = CharacterService(db).get_relations(user["user_id"], book_id)
+    return RelationListResponse(relations=relations)

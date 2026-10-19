@@ -304,7 +304,7 @@ def rebuild(db, user_id, book_id, revision):
     return service.summaries(user_id, book_id)
 
 
-def persist(conn, book_id, summaries, invalid):
+def persist(conn, book_id, summaries, invalid, batch_id=None):
     stamp = now()
     conn.execute("DELETE FROM knowledge_entities WHERE book_id=?", (book_id,))
     for kind, entries in summaries.items():
@@ -332,6 +332,153 @@ def persist(conn, book_id, summaries, invalid):
     )
     for decision_id in invalid:
         conn.execute("UPDATE entity_resolutions SET status='pending' WHERE id=?", (decision_id,))
+    sync_structured_knowledge(conn, book_id, summaries, batch_id)
+
+
+def sync_structured_knowledge(conn, book_id, summaries, batch_id=None):
+    """Reconcile the current projection into editable, evidence-backed knowledge."""
+    stamp = now()
+
+    def evidence(source):
+        if not source:
+            return None
+        evidence_id = "evidence_" + digest([book_id, source])[:32]
+        conn.execute(
+            "INSERT OR IGNORE INTO knowledge_evidence "
+            "(id,book_id,chapter_id,chunk_id,quote,source_type,start_offset,end_offset,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (evidence_id, book_id, source.get("chapter_id"), source.get("segment_id"),
+             source.get("quote", ""), "explicit_fact", source.get("start"), source.get("end"), stamp),
+        )
+        return evidence_id
+
+    def change(entity_type, entity_id, operation, before, after):
+        conn.execute(
+            "INSERT INTO knowledge_changes "
+            "(id,book_id,entity_type,entity_id,operation,before_json,after_json,reason,operator_type,operator_id,batch_id,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("change_" + digest([book_id, entity_type, entity_id, operation, after])[:32],
+             book_id, entity_type, entity_id, operation,
+             json.dumps(before, ensure_ascii=False) if before else None,
+             json.dumps(after, ensure_ascii=False) if after else None,
+             "自动提取对账", "agent", None, batch_id, stamp),
+        )
+
+    characters = {}
+    for entry in summaries.get("characters", []):
+        name = entry["name"].strip()
+        row = conn.execute(
+            "SELECT * FROM knowledge_characters WHERE book_id=? AND canonical_name=?",
+            (book_id, name),
+        ).fetchone()
+        aliases = json.dumps(entry.get("aliases", []), ensure_ascii=False)
+        if row is None:
+            character_id = "character_" + digest([book_id, name])[:32]
+            conn.execute(
+                "INSERT INTO knowledge_characters "
+                "(id,book_id,canonical_name,aliases_json,frequency,state,merged_into_id,deleted_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (character_id, book_id, name, aliases, entry.get("frequency", 0), "active", None, None, stamp, stamp),
+            )
+            row = conn.execute("SELECT * FROM knowledge_characters WHERE id=?", (character_id,)).fetchone()
+            change("character", character_id, "create", None, dict(row))
+        elif row["deleted_at"] is None and not row["aliases_json"] == aliases:
+            conn.execute(
+                "UPDATE knowledge_characters SET aliases_json=?,frequency=?,updated_at=? WHERE id=? AND state='active'",
+                (aliases, entry.get("frequency", 0), stamp, row["id"]),
+            )
+        elif row["deleted_at"] is None:
+            conn.execute(
+                "UPDATE knowledge_characters SET frequency=?,updated_at=? WHERE id=? AND state='active'",
+                (entry.get("frequency", 0), stamp, row["id"]),
+            )
+        characters[name.casefold()] = row["id"]
+        source = (entry.get("evidence") or [{}])[0].get("sources", [{}])[0]
+        evidence_id = evidence(source)
+        for field in ("summary", "identity", "appearance", "personality", "behavior",
+                      "speech", "relationships", "key_events", "state_changes"):
+            value = entry.get(field)
+            if not value or row["deleted_at"] is not None:
+                continue
+            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            current = conn.execute(
+                "SELECT * FROM knowledge_facts WHERE book_id=? AND entity_id=? AND fact_type=? "
+                "AND source_type='agent' AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
+                (book_id, row["id"], field),
+            ).fetchone()
+            if current and current["locked_by_user"]:
+                continue
+            if current and current["value_json"] == encoded:
+                continue
+            fact_id = "fact_" + digest([book_id, row["id"], field, encoded])[:32]
+            if current:
+                conn.execute(
+                    "UPDATE knowledge_facts SET state='superseded',updated_at=? WHERE id=?",
+                    (stamp, current["id"]),
+                )
+                version = current["version"] + 1
+                supersedes = current["id"]
+            else:
+                version, supersedes = 1, None
+            conn.execute(
+                "INSERT OR REPLACE INTO knowledge_facts "
+                "(id,book_id,entity_type,entity_id,fact_type,value_json,state,version,supersedes_id,evidence_id,"
+                "source_type,locked_by_user,deleted_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (fact_id, book_id, "character", row["id"], field, encoded, "active", version,
+                 supersedes, evidence_id, "agent", 0, None, stamp, stamp),
+            )
+            change("fact", fact_id, "create" if not current else "update",
+                   dict(current) if current else None,
+                   dict(conn.execute("SELECT * FROM knowledge_facts WHERE id=?", (fact_id,)).fetchone()))
+        for relation in entry.get("relationships", []):
+            target = relation.get("target_name", "").strip()
+            if not target:
+                continue
+            relation_id = "relation_" + digest([book_id, row["id"], relation["relation"], target.casefold()])[:32]
+            target_id = characters.get(target.casefold())
+            if not target_id:
+                review_id = "review_" + digest([book_id, row["id"], relation["relation"], target])[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO knowledge_reviews "
+                    "(id,book_id,review_type,entity_type,entity_id,payload_json,state,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (review_id, book_id, "unresolved_relation", "relation", relation_id,
+                     json.dumps({"subject_id": row["id"], "target_name": target,
+                                 "relation": relation["relation"]}, ensure_ascii=False),
+                     "pending", stamp),
+                )
+                continue
+            relation_id = "relation_" + digest([book_id, row["id"], relation["relation"], target_id])[:32]
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_relations "
+                "(id,book_id,subject_type,subject_id,relation_type,object_type,object_id,value_json,state,evidence_id,deleted_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (relation_id, book_id, "character", row["id"], relation["relation"],
+                 "character", target_id, "{}", "active", evidence_id, None, stamp, stamp),
+            )
+
+    for entry in summaries.get("storyline_events", []):
+        source = (entry.get("evidence") or [{}])[0].get("sources", [{}])[0]
+        evidence_id = evidence(source)
+        event_id = "event_" + digest([book_id, entry["entity_id"]])[:32]
+        before = conn.execute("SELECT * FROM knowledge_events WHERE id=?", (event_id,)).fetchone()
+        values = (
+            book_id, entry["name"], entry.get("description", "") or entry.get("summary", ""),
+            entry.get("time") or None, None, entry.get("chapter_no"), None, "active",
+            evidence_id, None, stamp, stamp,
+        )
+        conn.execute(
+            "INSERT INTO knowledge_events "
+            "(id,book_id,title,description,story_time_start,story_time_end,chapter_no,sequence_no,state,evidence_id,deleted_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,"
+            "description=excluded.description,story_time_start=excluded.story_time_start,"
+            "chapter_no=excluded.chapter_no,evidence_id=excluded.evidence_id,updated_at=excluded.updated_at "
+            "WHERE knowledge_events.state='active' AND knowledge_events.deleted_at IS NULL",
+            (event_id, *values),
+        )
+        after = conn.execute("SELECT * FROM knowledge_events WHERE id=?", (event_id,)).fetchone()
+        if before is None:
+            change("event", event_id, "create", None, dict(after))
 
 
 def resolve(db, user_id, book_id, payload):

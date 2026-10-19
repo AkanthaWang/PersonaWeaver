@@ -9,6 +9,7 @@ from backend.app.domains.memory.router import router as memory_router
 from backend.app.domains.retrieval.router import router as retrieval_router
 from backend.app.domains.settings.router import router as settings_router
 from backend.app.domains.workflow.router import router as workflow_router
+from backend.app.domains.knowledge.router import router as knowledge_router
 
 # Flat `/api/v1` namespace preserved for the existing frontend client.
 router = APIRouter(prefix="/api/v1")
@@ -21,3 +22,4 @@ router.include_router(characters_router, tags=["characters"])
 router.include_router(conversation_router, tags=["conversation"])
 router.include_router(memory_router, tags=["memory"])
 router.include_router(retrieval_router, tags=["retrieval"])
+router.include_router(knowledge_router, tags=["knowledge"])

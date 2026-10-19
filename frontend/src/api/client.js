@@ -9,6 +9,11 @@ api.interceptors.response.use((response) => response.data, (error) => {
     : error.code === "ECONNABORTED" ? "请求超时" : "无法连接本地服务";
   return Promise.reject(new Error(message));
 });
+
+// 获取书籍列表
+export function getBooks() {
+  return api.get("/books");
+}
 export async function download(path, filename) {
   saveBlob(await api.get(path, { responseType: "blob" }), filename);
 }

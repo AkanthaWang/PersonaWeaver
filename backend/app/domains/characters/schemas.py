@@ -1,4 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Dict, Any
+import json
 
 
 class CardCreate(BaseModel):
@@ -27,4 +29,51 @@ class CardUpdate(BaseModel):
         return CardCreate.clean_name(value)
 
 
-__all__ = ["CardCreate", "CardUpdate"]
+class Character(BaseModel):
+    id: str
+    book_id: str
+    canonical_name: str
+    aliases_json: str
+    frequency: int
+    state: str
+    created_at: str
+    updated_at: str
+
+    @property
+    def aliases(self) -> List[str]:
+        try:
+            return json.loads(self.aliases_json or "[]")
+        except json.JSONDecodeError:
+            return []
+
+
+class Relation(BaseModel):
+    id: str
+    book_id: str
+    subject_type: str
+    subject_id: str
+    relation_type: str
+    object_type: str
+    object_id: str
+    value_json: str
+    state: str
+    created_at: str
+    updated_at: str
+
+    @property
+    def value(self) -> Dict[str, Any]:
+        try:
+            return json.loads(self.value_json or "{}")
+        except json.JSONDecodeError:
+            return {}
+
+
+class CharacterListResponse(BaseModel):
+    characters: List[Character]
+
+
+class RelationListResponse(BaseModel):
+    relations: List[Relation]
+
+
+__all__ = ["CardCreate", "CardUpdate", "Character", "Relation", "CharacterListResponse", "RelationListResponse"]

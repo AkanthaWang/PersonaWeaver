@@ -335,7 +335,7 @@ class ExtractionWorker:
                     (identifier("extraction"), self.book["book_id"], chapter["id"],
                      json.dumps(payload, ensure_ascii=False), self.settings["model"], now()),
                 )
-            knowledge.persist(conn, self.book["book_id"], summaries, invalid)
+            knowledge.persist(conn, self.book["book_id"], summaries, invalid, self.task_id)
             status = "completed_with_warnings" if self.failures else "completed"
             message = f"提取完成，累计覆盖 {len(results)}/{len(chapters)} 章"
             if self.failures:
