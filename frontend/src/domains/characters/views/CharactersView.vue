@@ -1,7 +1,6 @@
 <template>
   <header class="page-header page-header-compact">
     <el-button type="primary" :icon="Plus" :disabled="!workspace.selectedId" @click="openEditor()">新建角色卡</el-button>
-    <el-button type="success" :icon="Connection" @click="goToRelationshipGraph">人物关系图谱</el-button>
   </header>
   <div class="toolbar"><BookPicker /><el-input v-model="query" placeholder="搜索角色" :prefix-icon="Search" clearable /><el-button :icon="Refresh" :loading="loading" @click="load" /></div>
   <section v-loading="loading">
@@ -33,7 +32,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { Plus, Search, Refresh, Edit, View, ChatDotRound, Download, Delete, Check, Connection } from "@element-plus/icons-vue";
+import { Plus, Search, Refresh, Edit, View, ChatDotRound, Download, Delete, Check } from "@element-plus/icons-vue";
 import BookPicker from "../../../components/BookPicker.vue";
 import { api, download } from "../../../api/client";
 import { useWorkspaceStore } from "../../../stores/workspace";
@@ -76,7 +75,5 @@ async function startChat(card) {
 watch(() => workspace.selectedId, load);
 onMounted(async () => { try { await workspace.refresh(); await load(); } catch (error) { report(error); } });
 
-function goToRelationshipGraph() {
-  router.push('/characters/relationships');
-}
+
 </script>

@@ -16,7 +16,6 @@ export const router = createRouter({
     { path: "/upload", component: DocumentsView },
     { path: "/summary", component: SummaryView },
     { path: "/characters", component: CharactersView },
-    { path: "/characters/relationships", component: CharacterRelationshipGraph },
     { path: "/knowledge", component: KnowledgeView },
     { path: "/chat", component: ConversationView, meta: { keepAlive: true } },
     { path: "/settings", component: SettingsView },
