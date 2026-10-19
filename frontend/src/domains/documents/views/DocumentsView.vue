@@ -33,7 +33,7 @@
       <el-button type="primary" :icon="Upload" native-type="submit" :loading="uploading" :disabled="!files.length">上传</el-button>
     </el-form>
   </el-dialog>
-  <el-dialog :model-value="Boolean(extractBook)" title="提取作品资料" width="min(92vw, 530px)" @close="extractBook = null">
+  <el-dialog :model-value="Boolean(extractBook)" title="提取作品资料" width="min(92vw, 530px)" :close-on-click-modal="!starting" :show-close="!starting" :close-on-press-escape="!starting" @close="extractBook = null">
     <h3>{{ extractBook?.title }}</h3>
     <p>提取模型：{{ extractionModel?.model?.name || extractionModel?.message || '加载中' }}</p>
     <p class="muted">已覆盖章节：{{ formatCoverage(coverage) }}</p>
@@ -43,7 +43,9 @@
       <div v-if="range === 'interval'" class="extraction-range"><el-form-item label="起始章节"><el-input-number v-model="chapterStart" :min="1" :max="extractBook?.chapter_count || 100000" /></el-form-item><el-form-item label="结束章节"><el-input-number v-model="chapterEnd" :min="chapterStart || 1" :max="extractBook?.chapter_count || 100000" /></el-form-item></div>
       <el-form-item label="强制重算选定章节"><el-switch v-model="force" aria-label="强制重算选定章节" /></el-form-item>
     </el-form>
-    <template #footer><el-button @click="extractBook = null">取消</el-button><el-button type="primary" :icon="MagicStick" :disabled="extractionModel?.status !== 'healthy'" :loading="starting" @click="extract">开始提取</el-button></template>
+    <div v-if="scope" class="scope-preview" role="status"><strong>第 {{ scope.from }}–{{ scope.to }} 章 · 共 {{ scope.count }} 章</strong><span>尚未覆盖 {{ scope.uncovered }} 章 · 已覆盖 {{ scope.covered }} 章</span><el-tag v-if="force" type="warning" effect="plain">选定范围全部重新计算</el-tag><el-tag v-else type="info" effect="plain">复用有效检查点</el-tag></div>
+    <p v-else-if="extractBook?.chapter_count" class="error-text" role="alert">请选择有效的章节范围</p>
+    <template #footer><el-button :disabled="starting" @click="extractBook = null">取消</el-button><el-button type="primary" :icon="MagicStick" :disabled="extractionModel?.status !== 'healthy' || (Boolean(extractBook?.chapter_count) && !scope)" :loading="starting" @click="extract">开始提取</el-button></template>
   </el-dialog>
   <ChapterReader v-model="showChapters" :book-id="chapterBook?.book_id" :title="chapterBook?.title" />
   <TaskDetail v-model="showTask" :task-id="taskId" @changed="refresh" />
@@ -55,6 +57,7 @@ import { ElMessage } from "element-plus";
 import { Upload, Search, Refresh, Reading, Document, MagicStick, Collection, Download, Delete, Tickets } from "@element-plus/icons-vue";
 import ChapterReader from "../components/ChapterReader.vue";
 import { formatCoverage } from "../coverage";
+import { extractionScope } from "../extraction";
 import TaskDetail from "../../workflow/components/TaskDetail.vue";
 import { api, upload, uploadBatch, download } from "../../../api/client";
 import { useWorkspaceStore } from "../../../stores/workspace";
@@ -69,6 +72,9 @@ const extractBook = ref(null), range = ref("all"), limit = ref(null), starting =
 const showChapters = ref(false), chapterBook = ref(null);
 const chapterStart = ref(1), chapterEnd = ref(1), force = ref(false), coverage = ref([]), extractionModel = ref(null);
 const showTask = ref(false), taskId = ref("");
+const scope = computed(() => extractionScope(extractBook.value?.chapter_count, {
+  range: range.value, limit: limit.value, start: chapterStart.value, end: chapterEnd.value, coverage: coverage.value,
+}));
 let extractGeneration = 0;
 async function openExtract(book) {
   const current = ++extractGeneration;
@@ -100,7 +106,7 @@ async function submitUpload() {
 }
 async function parse(book) { try { await api.post(`/books/${book.book_id}/parse`); await refresh(); ElMessage.success("解析任务已创建"); } catch (error) { report(error); } }
 async function extract() {
-  if (starting.value || !extractBook.value) return;
+  if (starting.value || !extractBook.value || (extractBook.value.chapter_count && !scope.value)) return;
   starting.value = true;
   try {
     const result = await api.post("/extract", { book_id: extractBook.value.book_id, force: force.value,
@@ -117,4 +123,6 @@ function openChapters(book) { chapterBook.value = book; showChapters.value = tru
 </script>
 <style scoped>
 .extraction-range { display: flex; flex-wrap: wrap; gap: 16px; }
+.scope-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; border-top: 1px solid var(--pw-border); padding-top: 16px; font-size: 13px; }
+.scope-preview strong, .scope-preview > span { width: 100%; }
 </style>

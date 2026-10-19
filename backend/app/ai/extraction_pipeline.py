@@ -17,7 +17,9 @@ from backend.app.ai.prompts.extraction import (
 )
 
 KINDS = ("characters", "items", "storyline_events", "world_locations")
-VERSION = "evidence-v1"
+# Changing this version intentionally invalidates old extraction checkpoints.
+# The next run must apply normalization and the current key-fact rules.
+VERSION = "evidence-v4-normalized-key-facts"
 API_ENVELOPE_KEYS = {"choices", "output", "usage", "total_tokens", "error"}
 
 
@@ -110,6 +112,18 @@ class Synthesis(StrictModel):
     paragraphs: list[Paragraph]
 
 
+KEY_FIELDS = {
+    "characters": ("summary", "description", "identity", "appearance", "personality", "aliases",
+                   "behavior", "speech", "relationships", "key_events", "state_changes"),
+    "items": ("summary", "description", "owner", "significance", "type",
+              "related_characters"),
+    "storyline_events": ("summary", "description", "time", "involved_characters",
+                         "state_changes", "significance"),
+    "world_locations": ("summary", "description", "owner", "significance",
+                        "related_characters"),
+}
+
+
 def segments(chapter: dict, limit=6000, overlap=300) -> list[dict]:
     text, start, output = chapter["content"], 0, []
     while start < len(text):
@@ -136,7 +150,18 @@ def validate_extraction(value, inputs: list[dict]) -> dict:
     output = {key: [] for key in KINDS}
     for kind in KINDS:
         for entry in parsed[kind]:
-            entry["name"] = entry["name"].strip()
+            # Normalize factual fields only; quotation whitespace is significant.
+            for key, value in entry.items():
+                if isinstance(value, str):
+                    entry[key] = value.strip()
+                elif isinstance(value, list) and key != "evidence":
+                    cleaned = []
+                    for item in value:
+                        item = (item.strip() if isinstance(item, str)
+                                else {k: v.strip() for k, v in item.items()})
+                        if item and (not isinstance(item, dict) or all(item.values())) and item not in cleaned:
+                            cleaned.append(item)
+                    entry[key] = cleaned
             if not entry["name"]:
                 raise ValueError("资料名称不能为空")
             citations = []
@@ -158,12 +183,20 @@ def validate_extraction(value, inputs: list[dict]) -> dict:
                     "start": source["start"] + found, "end": source["start"] + found + len(quote),
                     "quote": quote,
                 })
+            if not any(entry.get(field) for field in KEY_FIELDS[kind]):
+                continue
             entry = {key: value for key, value in entry.items() if value}
             entry["sources"] = sorted({digest(c): c for c in citations}.values(),
                                       key=lambda c: (c["chapter_no"], c["start"], c["end"], c["quote"]))
             entry["fact_id"] = "fact_" + digest([kind, entry])[:32]
             output[kind].append(entry)
-    output["questions"] = parsed["questions"]
+    output["questions"] = []
+    for question in parsed["questions"]:
+        question = {key: value.strip() for key, value in question.items()}
+        if not question["query"] or not question["subject"]:
+            raise ValueError("待核实问题的查询和对象不能为空")
+        if question not in output["questions"]:
+            output["questions"].append(question)
     return output
 
 
@@ -225,7 +258,9 @@ def combine(payloads):
     result["questions"] = []
     seen = set()
     for payload in payloads:
-        result["questions"].extend(payload.get("questions", []))
+        for question in payload.get("questions", []):
+            if question not in result["questions"]:
+                result["questions"].append(question)
         for kind in KINDS:
             for entry in payload[kind]:
                 signature = digest([kind, {k: v for k, v in entry.items() if k != "fact_id"}])

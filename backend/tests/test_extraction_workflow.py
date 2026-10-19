@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app.ai.extraction_pipeline import KINDS, combine, request_json, segments, validate_extraction
+from backend.app.ai.agents.extraction import AgentAction, ExtractionAgent
 from backend.app.ai.providers.api_types import ModelResponseError, extract_openai_content
 from backend.app.application import create_app
 from backend.app.core.config import Config
@@ -87,7 +88,7 @@ def test_unicode_occurrences_and_overlap_deduplication():
     chapter = {"id": "c", "book_id": "b", "chapter_no": 1, "title": "章", "content": "甲😀林川，林川"}
     part = segments(chapter)[0]
     result = empty()
-    result["characters"] = [{"name": "林川", "evidence": [
+    result["characters"] = [{"name": "林川", "identity": "医师", "evidence": [
         {"segment_id": part["segment_id"], "quote": "林川", "occurrence": 2},
     ]}]
     payload = validate_extraction(result, [part])
@@ -117,6 +118,240 @@ def test_repair_once_including_parser_errors(monkeypatch):
     with pytest.raises(ValueError):
         request_json({}, [], lambda value: value)
     assert invoke.call_count == 4
+
+
+def test_extraction_agent_lets_model_choose_retry(monkeypatch):
+    class Worker:
+        config_hash = "config"
+        settings = {}
+        cancelled_error = RuntimeError
+
+        def __init__(self):
+            self.failures = []
+            self.calls = 0
+
+        def step(self, *args):
+            return None
+
+        def check(self):
+            return None
+
+        def unit(self, kind, key, fingerprint, fn, chapter_id=None, force=False):
+            return fn()
+
+        def record_failure(self, *args):
+            self.failures.append({"kind": args[0]})
+
+        def mark_skipped(self, *args):
+            return None
+
+        def log(self, *args):
+            return None
+
+    worker = Worker()
+    attempts = iter([ValueError("结构错误"), {"characters": []}])
+    monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: json.dumps({"tool": "retry"}))
+
+    def execute():
+        value = next(attempts)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    action = AgentAction(
+        kind="extract", key="segment", fingerprint="fingerprint", label="测试分段",
+        execute=execute, input_size=1200,
+    )
+    result = ExtractionAgent(worker).run([action], "extract")
+    assert result == [{"characters": []}]
+    assert worker.failures == []
+
+
+def test_agent_skips_middle_chapter_continues_and_resumes(client, monkeypatch):
+    book_id = book(client)
+    calls = []
+
+    def failing(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            return json.dumps({"tool": "skip"})
+        if isinstance(prompt, dict) and not prompt.get("questions"):
+            number = prompt["segments"][0]["chapter_no"]
+            calls.append(number)
+            if number == 2:
+                return "invalid JSON"
+        return model_reply(settings, messages)
+
+    monkeypatch.setattr(llm, "chat", failing)
+    partial = extract(client, book_id)
+    assert partial["status"] == "completed_with_warnings", partial
+    assert summaries(client, book_id)["coverage"] == [1, 3]
+    assert calls == [1, 2, 2, 3]
+    units = client.get(f"/api/v1/tasks/{partial['id']}/units").json()["units"]
+    assert [unit["status"] for unit in units if unit["chapter_id"] and unit["kind"] == "extract"] == [
+        "completed", "skipped", "completed",
+    ]
+    assert any(unit["kind"] == "agent" and unit["status"] == "completed" for unit in units)
+    assert any(unit["kind"] == "agent" and unit["recovery_tool"] == "skip" for unit in units)
+    monkeypatch.setattr(llm, "chat", model_reply)
+    retry = client.post(f"/api/v1/tasks/{partial['id']}/retry")
+    retry.raise_for_status()
+    completed = client.get("/api/v1/tasks/" + retry.json()["task_id"]).json()
+    assert completed["status"] == "completed", completed
+    assert completed["reused_units"] >= 2
+    assert summaries(client, book_id)["coverage"] == [1, 2, 3]
+
+
+def test_agent_can_split_failed_segment_and_preserve_unicode_offsets(client, monkeypatch):
+    book_id = book(client, "第一章 起点\n" + "😀林川是医师。\n" * 200)
+    calls = []
+
+    def splitting(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            assert "split" in prompt["available_tools"]
+            return json.dumps({"tool": "split"})
+        if isinstance(prompt, dict):
+            part = prompt["segments"][0]
+            calls.append((part["start"], part["end"]))
+            if len(part["text"]) > 1200:
+                raise ModelResponseError("输出过长被截断")
+        return model_reply(settings, messages)
+
+    monkeypatch.setattr(llm, "chat", splitting)
+    completed = extract(client, book_id)
+    assert completed["status"] == "completed", completed
+    assert len(calls) == 3
+    original, left, right = calls
+    assert left[0] == original[0] and left[1] == right[0] and right[1] == original[1]
+    person = summaries(client, book_id)["summaries"][0]["content"][0]
+    chapter = client.app.state.db.one("SELECT * FROM chapters WHERE book_id=?", (book_id,))
+    for evidence in person["evidence"]:
+        for source in evidence["sources"]:
+            assert chapter["content"][source["start"]:source["end"]] == source["quote"]
+
+
+def test_agent_retries_are_bounded_and_all_failure_does_not_publish(client, monkeypatch):
+    book_id = book(client)
+    decisions = []
+
+    def broken(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            decisions.append(prompt["recovery_depth"])
+            return json.dumps({"tool": "retry"})
+        return "broken JSON"
+
+    monkeypatch.setattr(llm, "chat", broken)
+    failed = extract(client, book_id)
+    assert failed["status"] == "failed", failed
+    assert decisions == [0, 1] * 3
+    assert summaries(client, book_id)["coverage"] == []
+    assert summaries(client, book_id)["revision"] == 0
+    assert len(client.get(f"/api/v1/tasks/{failed['id']}/units").json()["units"]) == 15
+
+
+def test_agent_invalid_tool_falls_back_to_skip_and_preserves_old_long_chapter(client, monkeypatch):
+    book_id = book(client, "第一章 起点\n" + "林川是医师。\n" * 1100 + "\n第二章 后续\n林川离开。")
+    assert extract(client, book_id)["status"] == "completed"
+    old = client.app.state.db.one(
+        "SELECT e.* FROM extractions e JOIN chapters c ON c.id=e.chapter_id "
+        "WHERE e.book_id=? AND c.chapter_no=1", (book_id,),
+    )
+
+    def failing(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            return json.dumps({"tool": "delete_database"})
+        if isinstance(prompt, dict) and prompt["segments"][0]["chapter_no"] == 1 and prompt["segments"][0]["start"] > 0:
+            raise ModelResponseError("empty")
+        return model_reply(settings, messages)
+
+    monkeypatch.setattr(llm, "chat", failing)
+    partial = extract(client, book_id, force=True)
+    assert partial["status"] == "completed_with_warnings", partial
+    assert client.app.state.db.one("SELECT * FROM extractions WHERE id=?", (old["id"],)) == old
+    assert summaries(client, book_id)["coverage"] == [1, 2]
+
+
+def test_agent_lookup_failure_keeps_questions_and_other_facts(client, monkeypatch):
+    book_id = book(client)
+
+    def lookup_failure(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            return json.dumps({"tool": "skip"})
+        if isinstance(prompt, dict) and prompt.get("questions"):
+            raise ModelResponseError("empty lookup")
+        value = json.loads(model_reply(settings, messages))
+        if isinstance(prompt, dict) and prompt["segments"][0]["chapter_no"] == 1:
+            value["questions"] = [{"kind": "identity", "query": "林川", "subject": "林川"}]
+        return json.dumps(value)
+
+    monkeypatch.setattr(llm, "chat", lookup_failure)
+    partial = extract(client, book_id)
+    assert partial["status"] == "completed_with_warnings", partial
+    data = summaries(client, book_id)
+    assert data["coverage"] == [1, 2, 3]
+    assert data["warnings"][0]["subject"] == "林川"
+    units = client.get(f"/api/v1/tasks/{partial['id']}/units").json()["units"]
+    assert any(unit["kind"] == "lookup" and unit["status"] == "skipped" for unit in units)
+
+
+def test_agent_synthesis_failure_preserves_facts_and_other_people(client, monkeypatch):
+    book_id = book(client, "第一章 起点\n林川是医师，阿遥是学生。")
+
+    def people(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            return json.dumps({"tool": "skip"})
+        if isinstance(prompt, list):
+            if prompt[0]["name"] == "林川":
+                raise ModelResponseError("empty synthesis")
+            return model_reply(settings, messages)
+        part = prompt["segments"][0]
+        return json.dumps({**empty(), "characters": [
+            {"name": name, "identity": identity, "evidence": [{"segment_id": part["segment_id"], "quote": name}]}
+            for name, identity in (("林川", "医师"), ("阿遥", "学徒"))
+        ]})
+
+    monkeypatch.setattr(llm, "chat", people)
+    partial = extract(client, book_id)
+    assert partial["status"] == "completed_with_warnings", partial
+    people_data = next(row["content"] for row in summaries(client, book_id)["summaries"] if row["type"] == "characters")
+    assert {person["name"]: person["synthesis_status"] for person in people_data} == {
+        "林川": "pending", "阿遥": "ready",
+    }
+    assert all(person["evidence"] for person in people_data)
+
+
+def test_agent_auth_failure_still_stops_immediately(client, monkeypatch):
+    book_id = book(client)
+    response = requests.Response()
+    response.status_code = 401
+    invoke = Mock(side_effect=requests.HTTPError(response=response))
+    monkeypatch.setattr(llm, "chat", invoke)
+    failed = extract(client, book_id)
+    assert failed["status"] == "failed"
+    assert invoke.call_count == 1
+    assert summaries(client, book_id)["revision"] == 0
+
+
+def test_agent_cancellation_during_recovery_stops_without_publish(client, monkeypatch):
+    book_id = book(client)
+
+    def cancel(settings, messages, **kwargs):
+        prompt = json.loads(messages[1]["content"])
+        if isinstance(prompt, dict) and "available_tools" in prompt:
+            task = client.app.state.db.one("SELECT id FROM tasks WHERE status='running'")
+            client.post(f"/api/v1/tasks/{task['id']}/cancel").raise_for_status()
+            return json.dumps({"tool": "retry"})
+        raise ModelResponseError("empty")
+
+    monkeypatch.setattr(llm, "chat", cancel)
+    cancelled = extract(client, book_id)
+    assert cancelled["status"] == "cancelled", cancelled
+    assert summaries(client, book_id)["revision"] == 0
 
 
 def test_transient_retries_and_auth_failure(monkeypatch):
@@ -152,6 +387,10 @@ def test_incremental_range_preserves_other_chapters_and_reuses(client, monkeypat
     assert third["reused_units"] >= 3
     units = client.get(f"/api/v1/tasks/{third['id']}/units").json()
     assert all("payload" not in row for row in units["units"])
+    extraction_units = [row for row in units["units"] if row["kind"] == "extract"]
+    assert all(row["chapter_title"] and row["chapter_no"] > 0 and row["fact_count"] == 1
+               for row in extraction_units)
+    assert extraction_units
     assert "secret-key" not in json.dumps(third)
 
 

@@ -3,7 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 export const report = (error) => ElMessage.error(error.message || "操作失败");
 export const statusText = (status) => ({
   ready: "待解析", parsed: "已解析", processing: "处理中", pending: "排队中",
-  running: "执行中", completed: "已完成", completed_with_warnings: "已完成（有警告）", failed: "失败", cancelled: "已取消",
+  running: "执行中", completed: "已完成", completed_with_warnings: "部分完成", failed: "失败", cancelled: "已取消",
 }[status] || status);
 export const statusType = (status) => ({
   completed: "success", completed_with_warnings: "warning", parsed: "success", failed: "danger", pending: "warning", running: "warning", processing: "warning",
