@@ -36,6 +36,18 @@
     <h3>{{ extractBook?.title }}</h3>
     <p>提取模型：{{ extractionModel?.model?.name || extractionModel?.message || '加载中' }}</p>
     <p class="muted">已覆盖章节：{{ formatCoverage(coverage) }}</p>
+    <el-collapse class="extraction-method" accordion>
+      <el-collapse-item name="method" title="提取方法说明">
+        <ol>
+          <li><strong>分段读取：</strong>按章节读取原文，长章节会切成较短且相互重叠的片段，降低上下文过长造成的遗漏。</li>
+          <li><strong>结构化识别：</strong>提取人物、物品、剧情事件和地点，并记录名称、描述、关系、状态变化等关键信息。</li>
+          <li><strong>证据约束：</strong>每条资料都必须附带来自原文的逐字短引文；系统会检查引文能否精确匹配对应片段，无法验证的内容不会发布。</li>
+          <li><strong>补查与归并：</strong>模型发现身份、别名或指代不明确时，系统会在相关章节和相邻章节中补查，随后合并重复事实并保留章节来源。</li>
+          <li><strong>增量处理：</strong>已完成且输入、模型配置未变化的片段会复用检查点；开启“强制重算”后，选定范围会重新提取。</li>
+        </ol>
+        <p class="method-note">提取结果是基于原文证据的资料索引，不会凭空补全未明确写出的关系、时间或地点信息。</p>
+      </el-collapse-item>
+    </el-collapse>
     <el-form label-position="top" class="spaced">
       <el-form-item label="提取范围"><el-radio-group v-model="range"><el-radio-button value="all">全部章节</el-radio-button><el-radio-button value="limited">前 N 章</el-radio-button><el-radio-button value="interval">连续区间</el-radio-button></el-radio-group></el-form-item>
       <el-form-item v-if="range === 'limited'" label="章节数"><el-input-number v-model="limit" :min="1" :max="Math.min(extractBook?.chapter_count || 1000, 1000)" /></el-form-item>
@@ -122,6 +134,11 @@ function openChapters(book) { chapterBook.value = book; showChapters.value = tru
 </script>
 <style scoped>
 .extraction-range { display: flex; flex-wrap: wrap; gap: 16px; }
+.extraction-method { margin: 16px 0 18px; border-top: 1px solid var(--pw-border); border-bottom: 1px solid var(--pw-border); }
+.extraction-method ol { margin: 0; padding-left: 20px; color: var(--pw-ink-soft); font-size: 12px; line-height: 1.7; }
+.extraction-method li + li { margin-top: 7px; }
+.extraction-method strong { color: var(--pw-ink); }
+.method-note { margin: 12px 0 0; padding: 9px 10px; border-radius: 5px; background: var(--pw-primary-soft); color: var(--pw-primary-dark); font-size: 11px; line-height: 1.6; }
 .scope-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; border-top: 1px solid var(--pw-border); padding-top: 16px; font-size: 13px; }
 .scope-preview strong, .scope-preview > span { width: 100%; }
 </style>
