@@ -14,15 +14,14 @@
       </div>
     </aside>
     <div class="main-content" :class="{ 'main-content-chat': route.path === '/chat' }">
-      <header class="topbar"><div class="topbar-actions"><span class="local-chip"><el-icon><FolderOpened /></el-icon>本地工作区</span><RouterLink to="/upload" class="topbar-create">＋ 导入作品</RouterLink></div></header>
       <main class="page-body" :class="{ 'page-body-chat': route.path === '/chat' }"><slot /></main>
     </div>
   </div>
 </template>
 <script setup>
-import { computed, onMounted } from "vue";
+import { onMounted } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { ArrowRight, ChatLineRound, Collection, Document, FolderOpened, House, Upload } from "@element-plus/icons-vue";
+import { ArrowRight, ChatLineRound, Collection, Document, House, Upload } from "@element-plus/icons-vue";
 import { useAuthStore } from "../stores/auth.js";
 import defaultAvatar from "../assets/avatar.png";
 import logo from "../assets/logo.png";
