@@ -1,0 +1,18 @@
+:root {
+  --pw-surface: #fffdf9;
+  --pw-surface-raised: #ffffff;
+  --pw-background: #f5f3ee;
+  --pw-border: #e5e1d9;
+  --pw-border-strong: #d5d0c5;
+  --pw-ink: #202521;
+  --pw-ink-soft: #53605a;
+  --pw-muted: #7d8780;
+  --pw-primary: #236b5d;
+  --pw-primary-dark: #174e44;
+  --pw-primary-soft: #e0efe9;
+  --pw-coral: #c97557;
+  --pw-lilac: #7772a7;
+  --pw-shadow: 0 14px 35px rgba(39, 48, 42, .07);
+  --pw-radius: 10px;
+  --pw-radius-sm: 7px;
+}

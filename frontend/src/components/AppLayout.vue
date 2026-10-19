@@ -1,162 +1,39 @@
 <template>
-  <el-container class="layout-root">
-    <el-aside width="188px" class="layout-aside">
-      <div class="logo-wrap">
-        <div class="logo-dot"></div>
-        <div>
-          <div class="logo">PersonaWeaver</div>
-          <div class="logo-sub">Creator Console</div>
-        </div>
+  <div class="app-shell" :class="{ 'app-shell-chat': route.path === '/chat' }">
+    <aside class="navigation" aria-label="工作区导航">
+      <div class="brand-row"><RouterLink to="/dashboard" class="brand"><span class="brand-mark">PW</span><span><strong>PersonaWeaver</strong><small>灵织 · 故事创作空间</small></span></RouterLink></div>
+      <p class="nav-caption">创作工作区</p>
+      <nav>
+        <RouterLink v-for="item in navigation" :key="item.path" :to="item.path" class="nav-link"><el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span></RouterLink>
+      </nav>
+      <div class="navigation-footer">
+        <RouterLink :to="{ path: '/settings', query: { tab: 'profile' } }" class="account" aria-label="编辑个人资料">
+          <img :src="profile.user.avatar || defaultAvatar" alt="个人头像" /><span><strong>{{ profile.user.username || '创作者' }}</strong><small>我的本地工作区</small></span><el-icon><ArrowRight /></el-icon>
+        </RouterLink>
+        <div class="footer-note">让故事与角色，自由生长。</div>
       </div>
-      <div class="aside-body">
-        <el-menu :default-active="activePath" router class="menu-main">
-          <el-menu-item index="/upload">
-            <el-icon><Upload /></el-icon>
-            <span>上传处理</span>
-          </el-menu-item>
-          <el-menu-item index="/summary">
-            <el-icon><Document /></el-icon>
-            <span>Summary</span>
-          </el-menu-item>
-          <el-menu-item index="/characters">
-            <el-icon><User /></el-icon>
-            <span>角色库</span>
-          </el-menu-item>
-          <el-menu-item index="/chat">
-            <el-icon><ChatLineRound /></el-icon>
-            <span>LLM交互</span>
-          </el-menu-item>
-        </el-menu>
-
-        <el-menu :default-active="activePath" router class="menu-bottom">
-          <el-menu-item index="/settings">
-            <el-icon><Setting /></el-icon>
-            <span>全局设置</span>
-          </el-menu-item>
-        </el-menu>
-      </div>
-    </el-aside>
-
-    <el-container>
-      <el-main class="layout-main">
-        <slot />
-      </el-main>
-    </el-container>
-  </el-container>
+    </aside>
+    <div class="main-content" :class="{ 'main-content-chat': route.path === '/chat' }">
+      <header class="topbar"><div class="breadcrumb"><RouterLink to="/dashboard">工作区</RouterLink><el-icon><ArrowRight /></el-icon><strong>{{ pageTitle }}</strong></div><div class="topbar-actions"><span class="local-chip"><el-icon><FolderOpened /></el-icon>本地工作区</span><RouterLink to="/upload" class="topbar-create">＋ 导入作品</RouterLink></div></header>
+      <main class="page-body" :class="{ 'page-body-chat': route.path === '/chat' }"><slot /></main>
+    </div>
+  </div>
 </template>
-
 <script setup>
-import { computed } from "vue";
-import { useRoute } from "vue-router";
-import {
-  ChatLineRound,
-  Document,
-  Setting,
-  Upload,
-  User,
-} from "@element-plus/icons-vue";
-
-const route = useRoute();
-const activePath = computed(() => route.path);
+import { computed, onMounted } from "vue";
+import { RouterLink, useRoute } from "vue-router";
+import { ArrowRight, ChatLineRound, Collection, Document, FolderOpened, House, Upload } from "@element-plus/icons-vue";
+import { useAuthStore } from "../stores/auth.js";
+import defaultAvatar from "../assets/avatar.png";
+import { report } from "../lib/ui.js";
+const route = useRoute(), profile = useAuthStore();
+const navigation = [
+  { path: "/dashboard", label: "创作概览", icon: House },
+  { path: "/upload", label: "作品库", icon: Upload },
+  { path: "/summary", label: "故事资料", icon: Document },
+  { path: "/characters", label: "角色库", icon: Collection },
+  { path: "/chat", label: "角色对话", icon: ChatLineRound },
+];
+const pageTitle = computed(() => navigation.find((item) => item.path === route.path)?.label || "偏好设置");
+onMounted(async () => { if (!profile.loaded) { try { await profile.fetchMe(); } catch (error) { report(error); } } });
 </script>
-
-<style scoped>
-.layout-root {
-  height: 100vh;
-  overflow: hidden;
-}
-
-.layout-aside {
-  display: flex;
-  flex-direction: column;
-  background:
-    radial-gradient(circle at 4% 3%, rgba(86, 161, 255, 0.2), transparent 30%),
-    linear-gradient(180deg, #f8fbff 0%, #f2f7fd 100%);
-  border-right: 1px solid #dce8f4;
-}
-
-.aside-body {
-  min-height: 0;
-  height: calc(100vh - 58px);
-  display: flex;
-  flex-direction: column;
-}
-
-.menu-main {
-  border-right: none;
-  background: transparent;
-}
-
-.menu-bottom {
-  margin-top: auto;
-  border-top: 1px solid #dce8f4;
-  border-right: none;
-  background: transparent;
-}
-
-.logo-wrap {
-  height: 58px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid #dce8f4;
-}
-
-.logo-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #2f7dd4 0%, #6caeff 100%);
-  box-shadow: 0 0 0 4px rgba(47, 125, 212, 0.16);
-}
-
-.logo {
-  font-size: 18px;
-  font-weight: 700;
-  color: #11314a;
-  line-height: 1;
-}
-
-.logo-sub {
-  margin-top: 4px;
-  font-size: 11px;
-  color: #6b8198;
-  letter-spacing: 0.08em;
-}
-
-.layout-main {
-  padding: 24px;
-  height: 100vh;
-  overflow-y: auto;
-}
-
-:deep(.el-menu-item) {
-  border-radius: 10px;
-  margin: 4px 6px;
-}
-
-:deep(.el-menu-item.is-active) {
-  background: linear-gradient(90deg, #dcecff 0%, #eaf4ff 100%);
-  color: #1f5ea6;
-}
-
-@media (max-width: 900px) {
-  .layout-aside {
-    width: 78px !important;
-  }
-
-  .logo-wrap {
-    justify-content: center;
-    padding: 0;
-  }
-
-  .logo-sub {
-    display: none;
-  }
-
-  .logo {
-    font-size: 12px;
-  }
-}
-</style>

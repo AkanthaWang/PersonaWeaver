@@ -1,47 +1,21 @@
 import { createRouter, createWebHistory } from "vue-router";
-import { useAuthStore } from "./stores/auth";
-
-const UploadPage = () => import("./pages/UploadPage.vue");
-const DashboardPage = () => import("./pages/DashboardPage.vue");
-const SummaryPage = () => import("./pages/SummaryPage.vue");
-const CharactersPage = () => import("./pages/CharactersPage.vue");
-const ChatPage = () => import("./pages/ChatPage.vue");
-const SettingsPage = () => import("./pages/SettingsPage.vue");
-const LoginPage = () => import("./pages/LoginPage.vue");
+import WorkflowView from "./domains/workflow/views/WorkflowView.vue";
+import DocumentsView from "./domains/documents/views/DocumentsView.vue";
+import SummaryView from "./domains/documents/views/SummaryView.vue";
+import CharactersView from "./domains/characters/views/CharactersView.vue";
+import ConversationView from "./domains/conversation/views/ConversationView.vue";
+import SettingsView from "./domains/settings/views/SettingsView.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", redirect: "/login" },
-    { path: "/login", component: LoginPage, meta: { plain: true } },
-    { path: "/upload", component: UploadPage },
-    { path: "/dashboard", component: DashboardPage },
-    { path: "/summary", component: SummaryPage },
-    { path: "/characters", component: CharactersPage },
-    { path: "/chat", component: ChatPage, meta: { keepAlive: true } },
-    { path: "/settings", component: SettingsPage },
+    { path: "/", redirect: "/dashboard" },
+    { path: "/dashboard", component: WorkflowView },
+    { path: "/upload", component: DocumentsView },
+    { path: "/summary", component: SummaryView },
+    { path: "/characters", component: CharactersView },
+    { path: "/chat", component: ConversationView, meta: { keepAlive: true } },
+    { path: "/settings", component: SettingsView },
+    { path: "/:pathMatch(.*)*", redirect: "/dashboard" },
   ],
-});
-
-router.beforeEach(async (to) => {
-  const authStore = useAuthStore();
-
-  if (to.path === "/login") {
-    return true;
-  }
-
-  if (!authStore.isAuthenticated) {
-    return "/login";
-  }
-
-  if (!authStore.user && !authStore.checking) {
-    try {
-      await authStore.fetchMe();
-    } catch {
-      authStore.logout();
-      return "/login";
-    }
-  }
-
-  return true;
 });

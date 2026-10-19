@@ -1,49 +1,4 @@
 {
-  "cache": {
-    "root": "local_cache",
-    "unified_format_dir": "local_cache/unified_format",
-    "chapter_content_text_dir": "local_cache/chapter_content_text"
-  },
-  "llm": {
-    "provider": "vivo",
-    "base_url": "http://localhost:11434",
-    "model": "qwen2.5:0.5b",
-    "temperature": 0.1,
-    "timeout_seconds": 300,
-    "ollama": {
-      "base_url": "http://localhost:11434",
-      "model": "qwen2.5:0.5b",
-      "temperature": 0.1,
-      "timeout_seconds": 300
-    },
-    "remote_api": {
-      "base_url_env": "ECNU_API_BASE_URL",
-      "api_key_env": "ECNU_API_KEY",
-      "model_name_env": "ECNU_MODEL_NAME",
-      "base_url": "https://chat.ecnu.edu.cn/open/api/v1/chat/completions",
-      "model_name": "ecnu-max",
-      "temperature": 0.1,
-      "timeout_seconds": 300
-    },
-    "vivo": {
-      "base_url_env": "VIVO_AIGC_BASE_URL",
-      "api_key_env": "VIVO_AIGC_API_KEY",
-      "app_id_env": "VIVO_AIGC_APP_ID",
-      "model_name_env": "VIVO_AIGC_MODEL",
-      "base_url": "https://api-ai.vivo.com.cn/v1/chat/completions",
-      "model_name": "Volc-DeepSeek-V3.2",
-      "temperature": 0.1,
-      "timeout_seconds": 300,
-      "fallback_providers": ["remote_api"]
-    },
-    "glm": {
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "api_key": "",
-      "model": "glm-4.5-air",
-      "temperature": 0.1,
-      "timeout_seconds": 300
-    }
-  },
   "input_sources": {
     "text": ["txt", "md", "pdf", "doc", "epub"],
     "image": ["jpg", "jpeg", "heic", "heif", "png", "webp"],

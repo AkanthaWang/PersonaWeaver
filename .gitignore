@@ -55,6 +55,12 @@ personaweaver-frontend/
 local_cache/
 data/
 benchmark/
+# Runtime data now lives under db/ (keep db/agent tracked)
+db/*.sqlite3
+db/*.db
+db/uploads/
+db/avatars/
+db/backups/
 output/
 tmp/
 temp/
@@ -98,5 +104,6 @@ test-results/
 .tmp_extract_dispatch_test/
 
 # Project-specific sensitive Supabase notes must never be committed
-docs_local/数据库规划/Supabase配置信息.md
-docs_local/工作流搭建/Supabase配置信息 1.md
+db/
+.docs/
+.cache/

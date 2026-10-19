@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personaweaver-backend"
+version = "3.0.0"
+description = "PersonaWeaver local API and LangChain/LangGraph workflows"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.128,<1",
+  "pydantic>=2.10,<3",
+  "uvicorn>=0.34,<1",
+  "requests>=2.32,<3",
+  "python-dotenv>=1.0,<2",
+  "chardet>=5,<6",
+  "pypdf>=5,<7",
+  "python-multipart>=0.0.20,<1",
+  "langchain-core>=0.3,<2",
+  "langchain-openai>=0.3,<2",
+  "langchain-ollama>=0.2,<2",
+  "langgraph>=0.2,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "httpx>=0.28,<1"]
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["backend*"]
+
