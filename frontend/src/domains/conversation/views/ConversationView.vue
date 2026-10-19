@@ -34,7 +34,17 @@
               <div class="message-avatar"><img v-if="entry.message.role === 'user' && auth.user?.avatar" :src="auth.user.avatar" alt="个人头像" /><el-icon v-else-if="entry.message.role === 'user'"><User /></el-icon><span v-else-if="selectedCard && cardInitial" class="avatar-initial">{{ cardInitial }}</span><el-icon v-else><ChatDotRound /></el-icon></div>
               <div class="message-content">
                 <div class="message-meta"><small>{{ entry.message.role === 'user' ? (auth.user?.username || '我') : (selectedCard?.name || '角色助手') }}</small><el-tag v-if="entry.message.label" size="small" effect="plain" type="success">{{ entry.message.label }}</el-tag><time v-if="entry.message.created_at">{{ formatTime(entry.message.created_at) }}</time></div>
-                <pre class="document-text">{{ entry.message.content }}</pre>
+                <div class="message-markdown">
+                  <MarkdownRender
+                    mode="chat"
+                    :content="entry.message.content || ''"
+                    :final="!entry.pending"
+                    html-policy="escape"
+                    smooth-streaming="auto"
+                    :fade="false"
+                    :render-code-blocks-as-pre="true"
+                  />
+                </div>
                 <div v-if="entry.message.id && !entry.pending" class="message-actions"><el-tooltip content="复制内容" placement="top"><el-button text size="small" :icon="DocumentCopy" @click="copyMessage(entry.message)" /></el-tooltip><el-tooltip content="从此处继续（新建分支）" placement="top"><el-button text size="small" :icon="Share" :disabled="sending" @click="selectNode(entry.message.id)" /></el-tooltip><el-tooltip content="标记该节点" placement="top"><el-button text size="small" :icon="PriceTag" :disabled="sending" @click="labelNode(entry.message)" /></el-tooltip></div>
               </div>
             </article>
@@ -55,6 +65,8 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowDown, ChatDotRound, ChatLineRound, Check, Collection, DocumentCopy, EditPen, InfoFilled, MoreFilled, Plus, PriceTag, Promotion, Search, Share, User, WarningFilled } from "@element-plus/icons-vue";
+import MarkdownRender from "markstream-vue";
+import "markstream-vue/index.css";
 import { api } from "../../../api/client";
 import { useAuthStore } from "../../../stores/auth";
 import { report, confirmDelete } from "../../../lib/ui";

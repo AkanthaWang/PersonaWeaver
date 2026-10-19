@@ -30,7 +30,12 @@ def main():
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     destination = args.output or config.data_dir / "backups" / f"personaweaver-{datetime.now():%Y%m%d-%H%M%S}.sqlite3"
-    print(backup(config.database_path, destination))
+    main_snapshot = backup(config.database_path, destination)
+    print(main_snapshot)
+    novel_root = config.data_dir / "novel"
+    for source in sorted(novel_root.glob("*/extraction.sqlite3")):
+        book_snapshot = destination.parent / f"{destination.stem}-{source.parent.name}-extraction.sqlite3"
+        print(backup(source, book_snapshot))
 
 
 if __name__ == "__main__":

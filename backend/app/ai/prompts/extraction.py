@@ -15,6 +15,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "items 只有在具有明确名称且影响人物、冲突、线索或剧情走向时保留；普通物品不要输出。"
     "剧情只提取改变状态、关系、归属、地点或故事走向的离散事件，按原文先后输出；"
     "普通寒暄、无结果动作和重复描写不独立成事件。同名但不同时期的事件不能混写。"
+    "同一事件在不同片段中的重复表述应合并为一条事件并保留全部证据；不同阶段必须分别输出。"
     "time 仅记录原文明说的时间，不推测日历或将叙述顺序当作故事绝对时间。"
     "人物可含 summary、identity、appearance、personality、aliases、behavior、speech、key_events、"
     "state_changes、relationships（target_name、relation）；relationships 只记录原文明确表达或明确发生的"

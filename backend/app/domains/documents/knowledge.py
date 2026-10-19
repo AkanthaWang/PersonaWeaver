@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from backend.app.ai.extraction_pipeline import KINDS, digest
 from backend.app.db.database import identifier, now
 
-PROJECTION_VERSION = "entity-timeline-v2"
+PROJECTION_VERSION = "entity-timeline-v5-ranked-storylines"
 SCALAR_FIELDS = ("summary", "description", "identity", "appearance", "personality",
                  "time", "owner", "significance", "type")
 LIST_FIELDS = ("aliases", "behavior", "speech", "relationships", "key_events", "state_changes",
@@ -17,11 +17,6 @@ LIST_FIELDS = ("aliases", "behavior", "speech", "relationships", "key_events", "
 
 def normalized_name(value):
     return " ".join(unicodedata.normalize("NFKC", value or "").split()).casefold()
-
-
-def character_identity(value):
-    text = normalized_name(value)
-    return text if 0 < len(text) <= 8 and not any(mark in text for mark in "，。；：！？、,.!?;:") else ""
 
 
 def fact_order(fact):
@@ -54,7 +49,80 @@ def aggregate(group):
                 "value": value, "chapter_no": fact["chapter_no"], "chapter_id": fact["chapter_id"],
                 "chapter": fact["chapter"], "fact_ids": [fact["fact_id"]],
             })
-    return {**fields, "field_history": history}
+    frequency = sum(
+        max(1, sum(source.get("occurrence", 1) for source in fact.get("sources", [])))
+        for fact in group
+    )
+    return {**fields, "field_history": history, "frequency": frequency}
+
+
+def world_category(entry):
+    value = normalized_name(" ".join(
+        str(entry.get(key, "")) for key in ("type", "description", "significance")
+    ))
+    if any(term in value for term in ("势力", "组织", "宗门", "殿", "联盟", "团")):
+        return "势力"
+    if any(term in value for term in ("规则", "体系", "制度", "职业", "灵力")):
+        return "规则体系"
+    if any(term in value for term in ("种族", "族群", "魔族", "人族")):
+        return "种族"
+    if any(term in value for term in ("装备", "武器", "物品")):
+        return "关键物品"
+    return "地域"
+
+
+def build_storylines(events):
+    """Build a conservative event-to-storyline projection.
+
+    Entity identity is deliberately not used as a storyline boundary. Events
+    are grouped only when their names or state changes provide an explicit
+    continuity signal; otherwise every event gets its own line.
+    """
+    lines = []
+    for event in sorted(events, key=lambda item: fact_order(item["evidence"][0])):
+        event_names = {normalized_name(event.get("name"))}
+        event_names.update(normalized_name(value) for value in event.get("aliases", []))
+        changes = {normalized_name(value) for value in event.get("state_changes", [])}
+        best = None
+        for line in lines:
+            previous = line["stages"][-1]
+            previous_names = {normalized_name(previous.get("name"))}
+            previous_names.update(normalized_name(value) for value in previous.get("aliases", []))
+            previous_changes = {normalized_name(value) for value in previous.get("state_changes", [])}
+            same_signal = bool(event_names & previous_names) or bool(changes & previous_changes)
+            adjacent = event["first_chapter"] <= previous["last_chapter"] + 1
+            if same_signal and adjacent:
+                best = line
+                break
+        if best is None:
+            best = {
+                "storyline_id": "storyline_" + digest([event["entity_id"]])[:32],
+                "title": event["name"],
+                "summary": event.get("summary") or event.get("description") or event["name"],
+                "stages": [],
+                "source_ids": [],
+                "chapters": [],
+            }
+            lines.append(best)
+        best["stages"].append({
+            "stage_id": "stage_" + digest([best["storyline_id"], event["entity_id"]])[:32],
+            "title": event["name"],
+            "summary": event.get("summary") or event.get("description") or event["name"],
+            "aliases": event.get("aliases", []),
+            "state_changes": event.get("state_changes", []),
+            "event_id": event["entity_id"],
+            "fact_ids": event["source_ids"],
+            "evidence": event["evidence"],
+            "chapter_no": event["first_chapter"],
+            "last_chapter": event["last_chapter"],
+        })
+        best["source_ids"] = sorted(set(best["source_ids"]) | set(event["source_ids"]))
+        best["chapters"] = sorted(set(best["chapters"]) | set(
+            fact["chapter_no"] for fact in event["evidence"]
+        ))
+    for line in lines:
+        line["stage_count"] = len(line["stages"])
+    return lines
 
 
 def load_results(db, book_id):
@@ -111,43 +179,31 @@ def project(results, previous, resolutions):
         a_ids, b_ids = members[a], members[b]
         if not manual and any((a_ids & x and b_ids & y) or (a_ids & y and b_ids & x) for x, y in barriers):
             return
-        identities = {character_identity(facts[key].get("identity"))
-                      for key in a_ids | b_ids if character_identity(facts[key].get("identity"))}
-        if not manual and facts[left]["kind"] == "characters" and len(identities) > 1:
-            return
         parent[b] = a
         members[a].update(members.pop(b))
 
     by_name = {}
     for key, fact in facts.items():
         by_name.setdefault((fact["kind"], normalized_name(fact["name"])), []).append(key)
-    for (kind, name), ids in by_name.items():
-        discriminator = "type" if kind != "characters" else None
-        distinct = ({normalized_name(facts[key].get(discriminator)) for key in ids
-                     if facts[key].get(discriminator)} if discriminator else set())
+    for (kind, _), ids in by_name.items():
         for index, left_id in enumerate(ids):
             left = facts[left_id]
             for right_id in ids[index + 1:]:
                 right = facts[right_id]
                 same_quote = bool({digest(s) for s in left["sources"]} & {digest(s) for s in right["sources"]})
-                left_identity, right_identity = (
-                    (character_identity(f.get("identity")) if kind == "characters"
-                     else normalized_name(f.get(discriminator)))
-                    for f in (left, right)
+                same_position = any(
+                    left_source["chapter_id"] == right_source["chapter_id"]
+                    and left_source["start"] == right_source["start"]
+                    for left_source in left["sources"] for right_source in right["sources"]
                 )
-                same_identity = bool(left_identity and left_identity == right_identity)
-                conflicting = bool(left_identity and right_identity and left_identity != right_identity)
-                # Missing identity is safe to attach only when the name has one
-                # unambiguous profile. Separate recurrences of events stay dated.
-                continuity = kind != "storyline_events" and (
-                    (kind == "characters" and not conflicting)
-                    or (kind != "characters" and (same_identity or len(distinct) <= 1))
-                )
-                duplicate = same_quote and (kind != "storyline_events" or all(
+                duplicate = (same_quote or same_position) and all(
                     left.get(field) == right.get(field)
                     for field in SCALAR_FIELDS + LIST_FIELDS
-                ))
-                if not conflicting and (duplicate or continuity):
+                )
+                # Identity attributes are dated facts, never identity
+                # boundaries. Recurring events remain distinct unless their
+                # source position proves they are duplicate descriptions.
+                if kind != "storyline_events" or duplicate:
                     union(left_id, right_id)
     for key, fact in facts.items():
         if fact["kind"] != "characters":
@@ -155,9 +211,7 @@ def project(results, previous, resolutions):
         for alias in fact.get("aliases", []):
             if any(fact["name"] in s["quote"] and alias in s["quote"] for s in fact["sources"]):
                 for other in by_name.get(("characters", normalized_name(alias)), []):
-                    if not (character_identity(fact.get("identity")) and character_identity(facts[other].get("identity"))
-                            and character_identity(fact["identity"]) != character_identity(facts[other]["identity"])):
-                        union(key, other)
+                    union(key, other)
     for decision, left, right in active:
         for side in (left, right):
             ordered = sorted(side)
@@ -192,6 +246,9 @@ def project(results, previous, resolutions):
             "chapter_id": group[0]["chapter_id"],
         }
         entry.update(aggregate(group))
+        entry["first_appear"] = entry["first_chapter"]
+        if entry["kind"] == "world_locations":
+            entry["category"] = world_category(entry)
         entry["facts_fingerprint"] = digest(group)
         if matches and matches[0][2].get("facts_fingerprint") == entry["facts_fingerprint"]:
             entry["synthesis"] = matches[0][2].get("synthesis", [])
@@ -213,7 +270,12 @@ def project(results, previous, resolutions):
                 )
                 for other in entries
             )
-        entries.sort(key=lambda entry: fact_order(entry["evidence"][0]))
+        entries.sort(key=lambda entry: (
+            -entry.get("frequency", 0), entry.get("first_appear", 0),
+            normalized_name(entry.get("name")), entry["entity_id"],
+        ))
+        for display_order, entry in enumerate(entries, start=1):
+            entry["display_order"] = display_order
     return output, invalid
 
 
@@ -257,6 +319,17 @@ def persist(conn, book_id, summaries, invalid):
             "ON CONFLICT(book_id,type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
             (identifier("summary"), book_id, kind, json.dumps(entries, ensure_ascii=False), stamp, stamp),
         )
+    events = summaries.get("storyline_events", [])
+    storylines = build_storylines(events)
+    fingerprint = digest([event.get("source_ids", []) for event in events])
+    conn.execute(
+        "INSERT INTO storylines(id,book_id,content,input_fingerprint,status,error_message,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(book_id) DO UPDATE SET content=excluded.content,"
+        "input_fingerprint=excluded.input_fingerprint,status=excluded.status,error_message=excluded.error_message,"
+        "updated_at=excluded.updated_at",
+        (identifier("storylines"), book_id, json.dumps(storylines, ensure_ascii=False), fingerprint,
+         "ready", None, stamp, stamp),
+    )
     for decision_id in invalid:
         conn.execute("UPDATE entity_resolutions SET status='pending' WHERE id=?", (decision_id,))
 

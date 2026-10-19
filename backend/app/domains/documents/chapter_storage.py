@@ -11,7 +11,8 @@ def chapter_output_directory(database, book_id: str) -> Path:
     safe_id = "".join(char for char in book_id if char.isalnum() or char in "-_")
     if not safe_id:
         raise ValueError("Invalid book id")
-    return Path(database.path).resolve().parent / "novel" / safe_id
+    root_database = getattr(database, "parent", database)
+    return Path(root_database.path).resolve().parent / "novel" / safe_id
 
 
 def chapter_output_paths(database, book_id: str, chapter_count: int) -> list[Path]:
@@ -23,7 +24,6 @@ def save_chapter_outputs(database, book_id: str, cleaned_text: str, chapters: li
     target = chapter_output_directory(database, book_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
-    backup = target.parent / f".{target.name}.{uuid.uuid4().hex}.bak"
     chapter_dir = staging / "chapters"
     chapter_dir.mkdir(parents=True)
 
@@ -51,16 +51,12 @@ def save_chapter_outputs(database, book_id: str, cleaned_text: str, chapters: li
             encoding="utf-8",
         )
 
-        if target.exists():
-            os.replace(target, backup)
-        try:
-            os.replace(staging, target)
-        except Exception:
-            if backup.exists() and not target.exists():
-                os.replace(backup, target)
-            raise
-        if backup.exists():
-            shutil.rmtree(backup)
+        target.mkdir(parents=True, exist_ok=True)
+        os.replace(staging / "unified.txt", target / "unified.txt")
+        if (target / "chapters").exists():
+            shutil.rmtree(target / "chapters")
+        os.replace(staging / "chapters", target / "chapters")
+        os.replace(staging / "chapters.json", target / "chapters.json")
         return paths
     finally:
         if staging.exists():

@@ -147,7 +147,17 @@ nav a.nav-link { min-height: 44px; font-size: 14px; }
 .pi-messages .message.active .message-content { border-color: #bcdfd0; box-shadow: 0 0 0 3px rgba(35, 107, 93, .06); }
 .pi-messages .message.pending { opacity: .68; }
 .pi-messages .message.user .message-content { flex: 0 1 auto; max-width: 78%; }
-.pi-messages .document-text { font-size: 14px; line-height: 1.95; }
+.pi-messages .message-markdown { min-width: 0; color: #3f5148; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+.pi-messages .message-markdown p { margin: 0 0 12px; }
+.pi-messages .message-markdown p:last-child { margin-bottom: 0; }
+.pi-messages .message-markdown h1, .pi-messages .message-markdown h2, .pi-messages .message-markdown h3, .pi-messages .message-markdown h4 { margin: 18px 0 8px; color: #30453b; line-height: 1.45; }
+.pi-messages .message-markdown h1:first-child, .pi-messages .message-markdown h2:first-child, .pi-messages .message-markdown h3:first-child { margin-top: 0; }
+.pi-messages .message-markdown ul, .pi-messages .message-markdown ol { margin: 0 0 12px; padding-left: 24px; }
+.pi-messages .message-markdown li + li { margin-top: 4px; }
+.pi-messages .message-markdown blockquote { margin: 12px 0; padding: 4px 13px; border-left: 3px solid #b9d6ca; color: #6b7a72; background: #f7faf7; }
+.pi-messages .message-markdown a { overflow-wrap: anywhere; }
+.pi-messages .message-markdown :not(pre) > code { padding: 2px 5px; border-radius: 4px; background: #eef3ef; color: #775443; font-family: Consolas, "SFMono-Regular", monospace; font-size: .9em; }
+.pi-messages .message-markdown pre { max-width: 100%; overflow: auto; }
 .pi-messages .message-actions { display: flex; align-items: center; gap: 2px; margin-top: 9px; opacity: 0; transition: opacity .15s; }
 .pi-messages .message.user .message-actions { justify-content: flex-end; }
 .pi-messages .message:hover .message-actions, .pi-messages .message:focus-within .message-actions, .pi-messages .message.active .message-actions { opacity: 1; }

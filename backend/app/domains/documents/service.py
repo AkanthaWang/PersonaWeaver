@@ -28,7 +28,7 @@ class DocumentService:
         return {
             **{k: v for k, v in book.items() if k not in {"source_path", "user_id"}},
             "book_name": book["title"],
-            "chapter_count": self.repo.chapter_count(book["book_id"]),
+            "chapter_count": DocumentRepository(self.db.book_database(book["book_id"])).chapter_count(book["book_id"]),
         }
 
     def list(self, user_id: str):
@@ -51,11 +51,12 @@ class DocumentService:
         self.repo.create_book((
             book_id, user_id, title, author, language, suffix, filename, str(source_path), stamp, stamp,
         ))
+        self.db.book_database(book_id)
         return self._view(self.owned_record(user_id, book_id))
 
     def delete(self, user_id: str, book_id: str):
         book = self.owned_record(user_id, book_id)
-        if self.repo.has_active_task(book_id):
+        if DocumentRepository(self.db.book_database(book_id)).has_active_task(book_id):
             raise HTTPException(409, "任务执行中，暂不能删除书籍")
         self.repo.delete_book(book_id)
         remove_chapter_outputs(self.db, book_id)
@@ -63,11 +64,11 @@ class DocumentService:
 
     def chapters(self, user_id: str, book_id: str):
         self.owned_record(user_id, book_id)
-        return {"chapters": self.repo.chapters(book_id)}
+        return {"chapters": DocumentRepository(self.db.book_database(book_id)).chapters(book_id)}
 
     def chapter(self, user_id: str, book_id: str, chapter_id: str):
         self.owned_record(user_id, book_id)
-        row = self.repo.chapter(book_id, chapter_id)
+        row = DocumentRepository(self.db.book_database(book_id)).chapter(book_id, chapter_id)
         if not row:
             raise HTTPException(404, "章节不存在")
         return row
@@ -76,15 +77,18 @@ class DocumentService:
         self.owned_record(user_id, book_id)
         import json
 
-        return {"extractions": [{**row, "content": json.loads(row["content"])} for row in self.repo.extractions(book_id)]}
+        rows = DocumentRepository(self.db.book_database(book_id)).extractions(book_id)
+        return {"extractions": [{**row, "content": json.loads(row["content"])} for row in rows]}
 
     def summaries(self, user_id: str, book_id: str):
         import json
 
-        snapshot = self.repo.knowledge_snapshot(user_id, book_id)
+        snapshot = self.repo.knowledge_snapshot(
+            user_id, book_id, self.db.book_database(book_id),
+        )
         if snapshot is None:
             raise HTTPException(404, "书籍不存在")
-        book, rows, chapters, pending = snapshot
+        book, rows, chapters, pending, storyline = snapshot
         summaries = [
             {**row, "name": SUMMARY_LABELS[row["type"]], "content": json.loads(row["content"])}
             for row in rows
@@ -107,7 +111,9 @@ class DocumentService:
                 "coverage": [row["chapter_no"] for row in chapters],
                 "pending_count": sum(entry.get("needs_review", False) for row in summaries for entry in row["content"])
                 + len(pending) + len(warnings),
-                "pending_resolutions": pending, "warnings": warnings}
+                "pending_resolutions": pending, "warnings": warnings,
+                "storylines": json.loads(storyline["content"]) if storyline else [],
+                "storyline_status": storyline["status"] if storyline else "pending"}
 
     # --- parsing / extraction ---
 
@@ -119,7 +125,8 @@ class DocumentService:
         if not chapters:
             raise ValueError("没有有效章节内容")
         text_paths = chapter_output_paths(self.db, book["book_id"], len(chapters))
-        with self.db.connect() as conn:
+        book_db = self.db.book_database(book["book_id"])
+        with book_db.connect() as conn:
             conn.execute("DELETE FROM chapters WHERE book_id=?", (book["book_id"],))
             for index, chapter in enumerate(chapters, start=1):
                 conn.execute(
@@ -133,13 +140,14 @@ class DocumentService:
                     ),
                 )
         save_chapter_outputs(self.db, book["book_id"], text, chapters)
-        return self.db.all("SELECT * FROM chapters WHERE book_id=? ORDER BY chapter_no", (book["book_id"],))
+        return book_db.all("SELECT * FROM chapters WHERE book_id=? ORDER BY chapter_no", (book["book_id"],))
 
     def start_parse(self, user_id: str, book_id: str):
         book = self.owned_record(user_id, book_id)
-        if self.repo.has_extractions(book_id):
+        book_db = self.db.book_database(book_id)
+        if DocumentRepository(book_db).has_extractions(book_id):
             raise HTTPException(409, "已存在提取结果，请创建新书籍版本以重新解析")
-        task_id = workflow.create_task(self.db, book_id, "parse")
+        task_id = workflow.create_task(book_db, book_id, "parse")
         return book, task_id
 
     def start_extract(self, user_id: str, book_id: str, max_chapters=None, *, request=None, parent_task_id=None):
@@ -150,19 +158,20 @@ class DocumentService:
         profile = load_function_profile(self.db, user_id, "extraction")
         settings = llm.settings_from_profile(profile)
         request = request or {"max_chapters": max_chapters}
-        chapters = self.db.all("SELECT * FROM chapters WHERE book_id=? ORDER BY chapter_no", (book_id,))
+        book_db = self.db.book_database(book_id)
+        chapters = book_db.all("SELECT * FROM chapters WHERE book_id=? ORDER BY chapter_no", (book_id,))
         selected = select_chapters(chapters, request) if chapters else []
         if settings["provider"] == "vivo" and not settings["api_key"]:
             raise HTTPException(422, "请先配置模型 API Key")
         task_id = workflow.create_task(
-            self.db, book_id, "extract", request, profile["id"], model_fingerprint(settings), parent_task_id,
+            book_db, book_id, "extract", request, profile["id"], model_fingerprint(settings), parent_task_id,
         )
         if selected:
-            self.db.execute("UPDATE tasks SET input_fingerprint=? WHERE id=?", (input_fingerprint(selected), task_id))
+            book_db.execute("UPDATE tasks SET input_fingerprint=? WHERE id=?", (input_fingerprint(selected), task_id))
         return book, task_id, settings
 
     def run_extraction(self, book, task_id, task_type, settings=None, max_chapters=None):
-        workflow.run_task(self.db, book, task_id, task_type, settings, max_chapters)
+        workflow.run_task(self.db.book_database(book["book_id"]), book, task_id, task_type, settings, max_chapters)
 
     @staticmethod
     def report_error(exc):

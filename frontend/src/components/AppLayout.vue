@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell" :class="{ 'app-shell-chat': route.path === '/chat' }">
     <aside class="navigation" aria-label="工作区导航">
-      <div class="brand-row"><RouterLink to="/dashboard" class="brand"><span class="brand-mark">PW</span><span><strong>PersonaWeaver</strong><small>灵织 · 故事创作空间</small></span></RouterLink></div>
+      <div class="brand-row"><RouterLink to="/dashboard" class="brand"><img class="brand-mark" :src="logo" alt="PersonaWeaver" /><span><strong>PersonaWeaver</strong><small>灵织 · 故事创作空间</small></span></RouterLink></div>
       <p class="nav-caption">创作工作区</p>
       <nav>
         <RouterLink v-for="item in navigation" :key="item.path" :to="item.path" class="nav-link"><el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span></RouterLink>
@@ -25,6 +25,7 @@ import { RouterLink, useRoute } from "vue-router";
 import { ArrowRight, ChatLineRound, Collection, Document, FolderOpened, House, Upload } from "@element-plus/icons-vue";
 import { useAuthStore } from "../stores/auth.js";
 import defaultAvatar from "../assets/avatar.png";
+import logo from "../assets/logo.png";
 import { report } from "../lib/ui.js";
 const route = useRoute(), profile = useAuthStore();
 const navigation = [

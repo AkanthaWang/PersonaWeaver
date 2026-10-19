@@ -23,15 +23,17 @@ def owned_book(db, user_id, book_id):
 
 
 def create_task(db, book_id, task_type, request=None, profile_id=None, fingerprint=None, parent_task_id=None):
+    book_db = db if hasattr(db, "parent") else db.book_database(book_id)
+    parent_db = getattr(book_db, "parent", db)
     task_id, stamp = identifier("task"), now()
     try:
-        with db.connect() as conn:
+        with book_db.connect() as conn:
             conn.execute(
                 "INSERT INTO tasks(id,book_id,task_type,created_at,updated_at,request_json,model_profile_id,"
                 "config_fingerprint,parent_task_id) VALUES(?,?,?,?,?,?,?,?,?)",
                 (task_id, book_id, task_type, stamp, stamp, json.dumps(request or {}), profile_id, fingerprint, parent_task_id),
             )
-            conn.execute(
+            parent_db.execute(
                 "UPDATE books SET status='processing',progress=0,err_message=NULL,updated_at=? WHERE book_id=?",
                 (stamp, book_id),
             )
@@ -41,14 +43,16 @@ def create_task(db, book_id, task_type, request=None, profile_id=None, fingerpri
 
 
 def progress(db, task_id, book_id, percent, step, status="running", error=None):
-    with db.connect() as conn:
+    book_db = db if hasattr(db, "parent") else db.book_database(book_id)
+    parent_db = getattr(book_db, "parent", db)
+    with book_db.connect() as conn:
         stamp = now()
         conn.execute(
             "UPDATE tasks SET status=?,progress=?,current_step=?,error_message=?,updated_at=? WHERE id=?",
             (status, percent, step, error, stamp, task_id),
         )
         book_status = "parsed" if status in {"completed", "completed_with_warnings", "cancelled"} else "failed" if status == "failed" else "processing"
-        conn.execute(
+        parent_db.execute(
             "UPDATE books SET status=?,progress=?,err_message=?,updated_at=? WHERE book_id=?",
             (book_status, percent, error, stamp, book_id),
         )

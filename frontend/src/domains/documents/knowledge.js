@@ -30,6 +30,16 @@ export function filterEntries(entries, { query = "", reviewOnly = false, chapter
       || firstChapter(entry) === chapter));
 }
 
+export function worldGroups(entries, filters = {}) {
+  const groups = new Map();
+  for (const entry of filterEntries(entries, filters)) {
+    const category = entry.category || "地域";
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(entry);
+  }
+  return [...groups.entries()].map(([category, values]) => ({ category, entries: values }));
+}
+
 export function timelineGroups(entries) {
   const position = (entry) => orderedEvidence(entry)[0] || entry;
   const sorted = [...entries].sort((a, b) => compareFacts(position(a), position(b)));
@@ -57,7 +67,9 @@ const normalizedName = (name) => String(name || "").normalize("NFKC").trim().rep
 
 export function relationGraph(entries, { query = "", reviewOnly = false, chapter = null } = {}) {
   const nodes = new Map(), edges = new Map(), names = new Map();
-  const profiles = entries.map((entry, index) => ({
+  const profiles = [...entries].sort((a, b) => (b.frequency || 0) - (a.frequency || 0)
+    || (a.first_appear || Number.MAX_SAFE_INTEGER) - (b.first_appear || Number.MAX_SAFE_INTEGER)
+    || normalizedName(a.name).localeCompare(normalizedName(b.name), "zh")).map((entry, index) => ({
     id: entry.entity_id || `legacy:${index}`, name: entry.name, entry,
   }));
   for (const profile of profiles) {
@@ -83,12 +95,21 @@ export function relationGraph(entries, { query = "", reviewOnly = false, chapter
         };
         if (profile.id === target.id) continue;
         nodes.set(target.id, target);
-        const id = JSON.stringify([profile.id, target.id, relation]);
+        const symmetric = /^(同伴|战友|朋友|敌人|同盟|合作|伴侣|夫妻|爱人|队友|盟友)$/.test(relation);
+        const endpoints = symmetric ? [profile.id, target.id].sort() : [profile.id, target.id];
+        const id = JSON.stringify([symmetric ? "undirected" : "directed", endpoints[0], endpoints[1]]);
         if (!edges.has(id)) edges.set(id, {
-          id, from: profile.id, to: target.id, fromName: profile.name, toName: target.name,
-          relation, ambiguous: Boolean(target.ambiguous), sources: [],
+          id, from: endpoints[0], to: endpoints[1],
+          fromName: endpoints[0] === profile.id ? profile.name : target.name,
+          toName: endpoints[1] === target.id ? target.name : profile.name,
+          relation, relations: [], relationCount: 0, strength: 0,
+          ambiguous: Boolean(target.ambiguous), sources: [],
         });
         const edge = edges.get(id);
+        if (!edge.relations.includes(relation)) edge.relations.push(relation);
+        edge.relationCount = edge.relations.length;
+        edge.strength = Math.max(edge.strength, relation.length);
+        if (edge.relations.length > 1) edge.relation = edge.relations[0];
         const sources = (fact.sources || []).filter((source) => chapter == null || Number(source.chapter_no) === chapter);
         for (const source of sources) {
           if (!edge.sources.some((item) => item.chapter_id === source.chapter_id && item.start === source.start && item.end === source.end)) edge.sources.push(source);

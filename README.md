@@ -1,4 +1,7 @@
-# PersonaWeaver · 灵织
+<h1 align="center">
+  <img src="./frontend/src/assets/logo.png" alt="Logo" width="44" align="absmiddle" /> 
+  PersonaWeaver · 灵织
+</h1>
 
 ## 一、项目定位
 
@@ -59,7 +62,8 @@ PersonaWeaver 以本地创作资料为基础，以结构化知识和证据追溯
 1. **Tavern**：https://github.com/peppertaco/Tavern/
 2. **SillyTavern**：https://github.com/SillyTavern/SillyTavern
 3. **KouriChat**：https://github.com/KouriChat/KouriChat
-
+4. **NovelAgent**：https://github.com/blackzhanzhan/novel_agent
+5. **NovelFanGraph**：https://github.com/LucianaiB2004/novel-fan-graph
 以上项目可为角色卡管理、角色扮演交互及相关功能设计提供参考。
 
 ## 八、未来发展方向

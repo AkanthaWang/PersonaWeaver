@@ -200,7 +200,8 @@ def validate_extraction(value, inputs: list[dict]) -> dict:
     return output
 
 
-def request_json(settings, messages, validator: Callable, check: Callable = lambda: None):
+def request_json(settings, messages, validator: Callable, check: Callable = lambda: None,
+                 repair_prompt: str = EXTRACTION_REPAIR_PROMPT):
     from backend.app.domains.settings import llm
 
     messages = list(messages)
@@ -240,7 +241,7 @@ def request_json(settings, messages, validator: Callable, check: Callable = lamb
             if repair:
                 raise ValueError(f"模型结构或原文依据校验失败：{str(exc)[:400]}") from exc
             messages.append({"role": "user", "content":
-                             EXTRACTION_REPAIR_PROMPT.format(error=str(exc)[:800])})
+                             repair_prompt.format(error=str(exc)[:800])})
 
 
 def extract_inputs(settings, inputs, check=lambda: None, questions=None):

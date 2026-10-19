@@ -38,25 +38,35 @@ def test_cross_chapter_profiles_merge_missing_identity_and_keep_new_information(
     assert (entry["first_chapter"], entry["last_chapter"]) == (1, 3)
 
 
-def test_missing_identity_cannot_bridge_two_conflicting_people():
+def test_profiles_are_ranked_by_frequency_then_first_appearance():
+    rows = [result(3, "characters", name="低频"), result(1, "characters", name="龙皓晨")]
+    rows[0][1]["characters"][0]["sources"] *= 2
+    projected, _ = knowledge.project(rows, [], [])
+    assert [entry["name"] for entry in projected["characters"]] == ["低频", "龙皓晨"]
+    assert projected["characters"][0]["frequency"] == 2
+    assert projected["characters"][0]["display_order"] == 1
+
+
+def test_same_name_identity_changes_stay_in_one_profile():
     projected, _ = knowledge.project([
         result(1, "characters", identity="医师"), result(2, "characters"),
         result(3, "characters", identity="守卫"), result(4, "characters", identity="医师"),
     ], [], [])
-    assert len(projected["characters"]) == 2
-    assert sorted(sorted(fact["chapter_no"] for fact in entry["evidence"])
-                  for entry in projected["characters"]) == [[1, 2, 4], [3]]
-    assert all(entry["needs_review"] for entry in projected["characters"])
+    assert len(projected["characters"]) == 1
+    assert [fact["chapter_no"] for fact in projected["characters"][0]["evidence"]] == [1, 2, 3, 4]
+    assert projected["characters"][0]["identity"] == "医师"
 
 
-def test_owner_change_does_not_split_item_and_conflicting_types_remain_reviewable():
+def test_owner_change_and_type_change_stay_in_one_item_profile():
     projected, _ = knowledge.project([
         result(1, "items", type="药材", owner="林川"),
         result(2, "items", type="药材", owner="阿遥"),
         result(3, "items", type="兵器"),
     ], [], [])
-    assert sorted(len(entry["evidence"]) for entry in projected["items"]) == [1, 2]
-    assert all(entry["needs_review"] for entry in projected["items"])
+    assert len(projected["items"]) == 1
+    assert len(projected["items"][0]["evidence"]) == 3
+    assert projected["items"][0]["owner"] == "阿遥"
+    assert projected["items"][0]["type"] == "兵器"
 
 
 def test_recurring_named_events_stay_separate_and_sort_by_source_position():
@@ -72,6 +82,22 @@ def test_recurring_named_events_stay_separate_and_sort_by_source_position():
     ]
     assert not any(entry["needs_review"] for entry in events)
     assert [entry.get("time") for entry in events] == ["三年前", None, "翌日"]
+
+
+def test_storylines_keep_unrelated_events_separate_and_expose_stages():
+    rows = [
+        result(1, "storyline_events", name="考核", state_changes=["失败"]),
+        result(2, "storyline_events", name="考核", state_changes=["通过"]),
+        result(2, "storyline_events", name="救助", state_changes=["女孩获救"]),
+    ]
+    rows[2][1]["storyline_events"][0]["fact_id"] = "救助-2"
+    projected, _ = knowledge.project(rows, [], [])
+    lines = knowledge.build_storylines(projected["storyline_events"])
+    assert len(lines) == 2
+    exam = next(line for line in lines if line["title"] == "考核")
+    assert len(exam["stages"]) == 2
+    assert exam["stage_count"] == 2
+    assert all(stage["fact_ids"] for stage in exam["stages"])
 
 
 def test_normalized_names_and_synthesis_metadata_survive_reprojection():

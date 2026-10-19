@@ -25,3 +25,8 @@
 
 - README 只保留项目整体介绍与技术栈，具体细节写入 `docs/DETAILS.md`
 - 前端改动限定在 `frontend/`，后端改动限定在 `backend/`
+- 每完成一个功能后，执行 `git add .` 并提交：
+  ```bash
+  git add .
+  git commit -m "相关功能"
+  ```

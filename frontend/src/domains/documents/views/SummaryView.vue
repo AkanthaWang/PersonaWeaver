@@ -39,11 +39,27 @@
       <div class="graph-controls" @pointerdown.stop><el-tooltip content="缩小"><el-button :icon="ZoomOut" size="small" :disabled="graphZoom <= 0.55" aria-label="缩小关系图" @click.stop="setZoom(graphZoom / 1.2)" /></el-tooltip><span>{{ Math.round(graphZoom * 100) }}%</span><el-tooltip content="放大"><el-button :icon="ZoomIn" size="small" :disabled="graphZoom >= 2.4" aria-label="放大关系图" @click.stop="setZoom(graphZoom * 1.2)" /></el-tooltip><el-tooltip content="重置布局"><el-button :icon="Refresh" size="small" aria-label="重置布局" @click.stop="resetGraph" /></el-tooltip></div>
     </div>
     <p v-if="graph.nodes.length > relationNodes.length" class="muted">当前展示 {{ relationNodes.length }} / {{ graph.nodes.length }} 个人物，可筛选章节或搜索人物。</p>
-    <div class="relation-legend"><article v-for="edge in relationEdges" :key="`${edge.id}-legend`" class="relation-record"><span>{{ edge.fromName }} → {{ edge.toName }}<strong>{{ edge.relation }}</strong></span><el-tag v-if="edge.ambiguous" type="warning" size="small">同名待确认</el-tag><el-button v-if="edge.sources.length" :icon="Reading" text @click="openSource(edge.sources[0])">{{ edge.sources[0].chapter_title }} · 查看原文</el-button><span v-else class="muted">暂无定位依据</span></article></div>
+    <div class="relation-legend"><article v-for="edge in relationEdges" :key="`${edge.id}-legend`" class="relation-record"><span>{{ edge.fromName }} → {{ edge.toName }}<strong>{{ edge.relation }}</strong><small v-if="edge.relationCount > 1">多层关系：{{ edge.relations.join(" / ") }}</small></span><el-tag v-if="edge.ambiguous" type="warning" size="small">同名待确认</el-tag><el-button v-if="edge.sources.length" :icon="Reading" text @click="openSource(edge.sources[0])">{{ edge.sources[0].chapter_title }} · 查看原文</el-button><span v-else class="muted">暂无定位依据</span></article></div>
   </section>
   <section v-else-if="viewMode === 'timeline'" class="visual-panel" v-loading="loading">
-    <div class="visual-heading"><h2>事件时间线</h2><el-tag effect="plain">{{ filteredEvents.length }} 个事件</el-tag></div>
-    <div v-if="timeline.length" class="story-timeline">
+    <div class="visual-heading"><h2>故事线</h2><el-tag effect="plain">{{ visibleStorylines.length || filteredEvents.length }} 条</el-tag></div>
+    <div v-if="visibleStorylines.length" class="story-timeline">
+      <article v-for="line in visibleStorylines" :key="line.storyline_id" class="timeline-event">
+        <div class="event-heading"><h3>{{ line.title }}</h3><el-tag size="small" effect="plain">{{ line.stage_count || line.stages.length }} 个阶段</el-tag></div>
+        <p class="event-description">{{ line.summary }}</p>
+        <p class="muted">覆盖章节：{{ line.chapters.map((chapter) => `第 ${chapter} 章`).join("、") }}</p>
+        <el-collapse>
+          <el-collapse-item :title="`展开主要阶段（${line.stage_count || line.stages.length} 个）`">
+            <article v-for="stage in line.stages.slice(0, 4)" :key="stage.stage_id" class="timeline-event">
+              <h4>{{ stage.title }}</h4><p class="event-description">{{ stage.summary }}</p>
+              <el-button :icon="View" @click="openDetail(eventById(stage.event_id))">查看依据</el-button>
+            </article>
+          </el-collapse-item>
+        </el-collapse>
+      </article>
+    </div>
+    <div v-else-if="storylineStatus === 'pending'" class="muted">故事线尚未整理，当前按事件展示。</div>
+    <div v-else-if="timeline.length" class="story-timeline">
       <section v-for="group in timeline" :key="group.chapter_no" class="timeline-chapter">
         <h2><span class="chapter-marker">{{ Number.isFinite(group.chapter_no) && group.chapter_no < Number.MAX_SAFE_INTEGER ? `第 ${group.chapter_no} 章` : '未标注章节' }}</span>{{ group.title }}</h2>
         <article v-for="entry in group.entries" :key="entry.entity_id || entry.name" class="timeline-event">
@@ -59,12 +75,17 @@
   <section v-else-if="viewMode === 'locations'" class="visual-panel" v-loading="loading">
     <div class="visual-heading"><h2>场景地图</h2><el-tag effect="plain">{{ locationEntries.length }} 个地点</el-tag></div>
     <el-empty v-if="!locationEntries.length" description="暂无地点资料" />
-    <div v-else class="location-map">
-      <article v-for="(entry, index) in locationEntries" :key="entry.entity_id || entry.name" class="location-card">
+    <div v-else>
+      <section v-for="group in locationGroups" :key="group.category" class="location-category">
+      <div class="visual-heading"><h3>{{ group.category }}</h3><el-tag effect="plain">{{ group.entries.length }} 项</el-tag></div>
+      <div class="location-map">
+      <article v-for="(entry, index) in group.entries" :key="entry.entity_id || entry.name" class="location-card">
         <span class="location-pin">{{ index + 1 }}</span><h3>{{ entry.name }}</h3><p>{{ overview(entry) || '暂无场景描述' }}</p>
         <div class="entity-tags"><el-tag v-if="entry.owner" size="small" type="info">归属：{{ entry.owner }}</el-tag><el-tag v-for="name in entry.related_characters?.slice(0, 3) || []" :key="name" size="small" effect="plain">{{ name }}</el-tag></div>
         <el-button :icon="View" @click="openDetail(entry)">查看地点</el-button>
       </article>
+    </div>
+      </section>
     </div>
   </section>
   <template v-else>
@@ -88,7 +109,7 @@
       <article v-for="entry in visible" :key="entry.entity_id || entry.name" class="asset-item">
         <h3>{{ entry.name }} <el-tag v-if="entry.needs_review" size="small" type="warning">待确认</el-tag></h3><p class="excerpt">{{ overview(entry) || '暂无简介' }}</p>
         <div class="entity-tags"><el-tag v-if="entry.identity || entry.type" size="small" effect="plain">{{ entry.identity || entry.type }}</el-tag><el-tag v-if="entry.owner" size="small" type="info">归属：{{ entry.owner }}</el-tag></div>
-        <span class="muted">{{ entry.evidence?.length || 0 }} 条章节依据<span v-if="firstChapter(entry) < Number.MAX_SAFE_INTEGER"> · 第 {{ firstChapter(entry) }}<template v-if="entry.last_chapter && entry.last_chapter !== firstChapter(entry)">—{{ entry.last_chapter }}</template> 章</span></span>
+        <span class="muted">出现 {{ entry.frequency || entry.evidence?.length || 0 }} 次 · {{ entry.evidence?.length || 0 }} 条章节依据<span v-if="firstChapter(entry) < Number.MAX_SAFE_INTEGER"> · 第 {{ firstChapter(entry) }}<template v-if="entry.last_chapter && entry.last_chapter !== firstChapter(entry)">—{{ entry.last_chapter }}</template> 章</span></span>
         <div class="form-actions"><el-button :icon="View" @click="openDetail(entry)">查看</el-button><el-button v-if="kind === 'characters'" :icon="User" @click="createCard(entry)">创建角色卡</el-button></div>
       </article>
     </div>
@@ -138,13 +159,14 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { Search, Refresh, Download, View, User, Reading, Connection, Scissor, Link, Close, ZoomIn, ZoomOut } from "@element-plus/icons-vue";
 import ChapterReader from "../components/ChapterReader.vue";
 import { formatCoverage } from "../coverage";
-import { changesFor, filterEntries, firstChapter, orderedEvidence, overview, relationGraph, timelineGroups } from "../knowledge";
+import { changesFor, filterEntries, firstChapter, orderedEvidence, overview, relationGraph, timelineGroups, worldGroups } from "../knowledge";
 import BookPicker from "../../../components/BookPicker.vue";
 import { api, saveBlob } from "../../../api/client";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import { report } from "../../../lib/ui";
 const workspace = useWorkspaceStore(), summaries = ref([]), coverage = ref([]), loading = ref(false), query = ref(""), kind = ref("characters"), viewMode = ref("profiles"), detail = ref(null);
 const revision = ref(0), pendingCount = ref(0), reviewOnly = ref(false), warnings = ref([]), pendingResolutions = ref([]);
+const storylines = ref([]), storylineStatus = ref("pending");
 const mergeTarget = ref(""), selectedFacts = ref([]), resolving = ref(false), showReader = ref(false), citation = ref(null);
 const cardEntry = ref(null), cardName = ref(""), creating = ref(false);
 const sourceChapter = ref(null), rebuilding = ref(false), expandedFacts = ref([]);
@@ -157,8 +179,16 @@ const filters = computed(() => ({
 const visible = computed(() => filterEntries(entries(kind.value), filters.value));
 const filteredEvents = computed(() => filterEntries(entries("storyline_events"), filters.value));
 const timeline = computed(() => timelineGroups(filteredEvents.value));
+const eventById = (id) => entries("storyline_events").find((entry) => entry.entity_id === id) || {};
+const visibleStorylines = computed(() => storylines.value.filter((line) => {
+  const events = line.stages.map((stage) => eventById(stage.event_id));
+  const term = query.value.trim().toLocaleLowerCase();
+  return (!term || JSON.stringify(line).toLocaleLowerCase().includes(term))
+    && (sourceChapter.value == null || events.some((event) => filterEntries([event], filters.value).length));
+}));
 const characterEntries = computed(() => entries("characters"));
 const locationEntries = computed(() => filterEntries(entries("world_locations"), filters.value));
+const locationGroups = computed(() => worldGroups(entries("world_locations"), filters.value));
 const graph = computed(() => relationGraph(characterEntries.value, filters.value));
 const resultCount = computed(() => viewMode.value === "relations" ? graph.value.nodes.length :
   viewMode.value === "locations" ? locationEntries.value.length : viewMode.value === "timeline" ? filteredEvents.value.length : visible.value.length);
@@ -297,13 +327,13 @@ function edgeLabel(edge) {
 let generation = 0;
 async function load() {
   const bookId = workspace.selectedId, current = ++generation;
-  summaries.value = []; coverage.value = []; detail.value = null; pendingCount.value = 0; warnings.value = []; pendingResolutions.value = []; showReader.value = false; cardEntry.value = null;
+  summaries.value = []; coverage.value = []; detail.value = null; pendingCount.value = 0; warnings.value = []; pendingResolutions.value = []; storylines.value = []; storylineStatus.value = "pending"; showReader.value = false; cardEntry.value = null;
   loading.value = false; revision.value = 0;
   if (!bookId) return;
   loading.value = true;
   try {
     const result = await api.get("/summaries", { params: { book_id: bookId } });
-    if (current === generation) { summaries.value = result.summaries; coverage.value = result.coverage || []; revision.value = result.revision; pendingCount.value = result.pending_count; warnings.value = result.warnings || []; pendingResolutions.value = result.pending_resolutions || []; if (!coverage.value.includes(sourceChapter.value)) sourceChapter.value = null; }
+    if (current === generation) { summaries.value = result.summaries; coverage.value = result.coverage || []; revision.value = result.revision; pendingCount.value = result.pending_count; warnings.value = result.warnings || []; pendingResolutions.value = result.pending_resolutions || []; storylines.value = result.storylines || []; storylineStatus.value = result.storyline_status || "pending"; if (!coverage.value.includes(sourceChapter.value)) sourceChapter.value = null; }
   } catch (error) { if (current === generation) report(error); } finally { if (current === generation) loading.value = false; }
 }
 function createCard(entry) { cardEntry.value = entry; cardName.value = entry.name; }

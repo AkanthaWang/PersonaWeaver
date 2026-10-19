@@ -1,9 +1,0 @@
-.vscode/
-.cache
-.streamlit
-.npm-cache
-dist
-.vite
-.env.local
-__pycache__
-node_modules

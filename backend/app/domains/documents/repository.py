@@ -49,21 +49,22 @@ class DocumentRepository(SQLiteRepository):
     def summaries(self, book_id: str):
         return self.all("SELECT * FROM summaries WHERE book_id=? ORDER BY type", (book_id,))
 
-    def knowledge_snapshot(self, user_id, book_id):
+    def knowledge_snapshot(self, user_id, book_id, book_database):
         with self.database.connect() as conn:
             conn.execute("BEGIN")
             book = conn.execute("SELECT * FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)).fetchone()
             if not book:
                 return None
-            summaries = [dict(row) for row in conn.execute(
+            summaries = [dict(row) for row in book_database.all(
                 "SELECT * FROM summaries WHERE book_id=? ORDER BY type", (book_id,),
             )]
-            extractions = [dict(row) for row in conn.execute(
+            extractions = [dict(row) for row in book_database.all(
                 "SELECT e.*,c.title,c.chapter_no FROM extractions e JOIN chapters c ON c.id=e.chapter_id "
                 "WHERE e.book_id=? ORDER BY c.chapter_no", (book_id,),
             )]
-            pending = [dict(row) for row in conn.execute(
+            pending = [dict(row) for row in book_database.all(
                 "SELECT * FROM entity_resolutions WHERE book_id=? AND status='pending' ORDER BY created_at,id",
                 (book_id,),
             )]
-            return dict(book), summaries, extractions, pending
+            storyline = book_database.one("SELECT * FROM storylines WHERE book_id=?", (book_id,))
+            return dict(book), summaries, extractions, pending, dict(storyline) if storyline else None
