@@ -20,7 +20,7 @@
               clearable
               @input="handleSearch"
             />
-            <el-button :icon="ViewGraph" @click="showGraph = !showGraph">
+            <el-button :icon="DataLine" @click="showGraph = !showGraph">
               {{ showGraph ? '表格视图' : '图谱视图' }}
             </el-button>
           </div>
@@ -80,7 +80,7 @@
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from "vue";
-import { Refresh, Search, ViewGraph } from "@element-plus/icons-vue";
+import { Refresh, Search, DataLine } from "@element-plus/icons-vue";
 import { Graph } from "@antv/g6";
 import { api } from "../../../api/client.js";
 import { useWorkspaceStore } from "../../../stores/workspace.js";

@@ -3,7 +3,6 @@ import WorkflowView from "./domains/workflow/views/WorkflowView.vue";
 import DocumentsView from "./domains/documents/views/DocumentsView.vue";
 import SummaryView from "./domains/documents/views/SummaryView.vue";
 import CharactersView from "./domains/characters/views/CharactersView.vue";
-import CharacterRelationshipGraph from "./domains/characters/views/CharacterRelationshipGraph.vue";
 import ConversationView from "./domains/conversation/views/ConversationView.vue";
 import SettingsView from "./domains/settings/views/SettingsView.vue";
 import KnowledgeView from "./domains/knowledge/views/KnowledgeView.vue";
