@@ -8,7 +8,7 @@ from backend.app.ai.agents.extraction import AgentAction, ExtractionAgent
 from backend.app.ai.extraction_pipeline import (
     Synthesis, combine, digest, extract_inputs, model_fingerprint, request_json, segments,
 )
-from backend.app.ai.prompts.extraction import CHARACTER_SYNTHESIS_SYSTEM_PROMPT
+from backend.app.ai.prompts.extraction import KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT
 from backend.app.db.database import identifier, now
 from backend.app.domains.documents import knowledge
 from backend.app.domains.workflow import failures
@@ -64,15 +64,16 @@ class ExtractionWorker:
     cancelled_error = Cancelled
 
     def __init__(self, db, book, task_id, settings):
-        self.db, self.book, self.task_id, self.settings = db, book, task_id, settings
-        self.task = db.one("SELECT * FROM tasks WHERE id=?", (task_id,))
+        self.db = db if hasattr(db, "parent") else db.book_database(book["book_id"])
+        self.book, self.task_id, self.settings = book, task_id, settings
+        self.task = self.db.one("SELECT * FROM tasks WHERE id=?", (task_id,))
         self.request = json.loads(self.task["request_json"])
         self.config_hash = model_fingerprint(settings)
         self.lineage = []
         parent = self.task.get("parent_task_id")
         while parent:
             self.lineage.append(parent)
-            row = db.one("SELECT parent_task_id FROM tasks WHERE id=?", (parent,))
+            row = self.db.one("SELECT parent_task_id FROM tasks WHERE id=?", (parent,))
             parent = row["parent_task_id"] if row else None
         # Units that were given up on for this task. They never abort the run;
         # they are reported on publish and re-executed by the next attempt
@@ -158,7 +159,31 @@ class ExtractionWorker:
             self.record_failure(kind, key, label, exc)
             return None, exc
 
-    def synthesize(self, entity):
+    def extraction_action(self, part, label, percent):
+        def split():
+            middle = len(part["text"]) // 2
+            boundary = part["text"].rfind("\n", middle // 2, middle + 1)
+            if boundary >= 0:
+                middle = boundary + 1
+            children = []
+            for start, end in ((0, middle), (middle, len(part["text"]))):
+                child = {
+                    **part, "start": part["start"] + start, "end": part["start"] + end,
+                    "text": part["text"][start:end],
+                    "segment_id": f"{part['chapter_id']}:{part['start'] + start}:{part['start'] + end}",
+                }
+                children.append(self.extraction_action(child, label, percent))
+            return children
+
+        return AgentAction(
+            kind="extract", key=part["segment_id"], fingerprint=digest([self.config_hash, part]),
+            label=label, execute=lambda: extract_inputs(self.settings, [part], self.check),
+            chapter_id=part["chapter_id"], force=self.request.get("force", False),
+            percent=percent, split=split if len(part["text"]) > 1000 else None,
+            input_size=len(part["text"]),
+        )
+
+    def synthesize(self, entity, agent, percent):
         batches, batch = [], []
         for fact in entity["evidence"]:
             candidate = batch + [fact]
@@ -168,25 +193,50 @@ class ExtractionWorker:
             batch.append(fact)
         if batch:
             batches.append(batch)
-        paragraphs = []
+        actions = []
         for index, facts in enumerate(batches):
             allowed = {fact["fact_id"] for fact in facts}
 
-            def validate(value):
+            def validate(value, allowed=allowed):
                 parsed = Synthesis.model_validate(value).model_dump()
                 if not parsed["paragraphs"] or any(not set(p["fact_ids"]) <= allowed for p in parsed["paragraphs"]):
                     raise ValueError("综合档案必须引用本批次已有事实 ID")
                 return parsed
 
-            fingerprint = digest([self.config_hash, facts])
-            value = self.unit("synthesis", f"{entity['entity_id']}:{index}", fingerprint, lambda: request_json(
-                self.settings, [
-                    {"role": "system", "content": CHARACTER_SYNTHESIS_SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
-                ], validate, self.check,
+            fingerprint = digest([self.config_hash, KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT, entity["kind"], facts])
+            actions.append(AgentAction(
+                kind="synthesis", key=f"{entity['entity_id']}:{index}", fingerprint=fingerprint,
+                label=f"资料综合：{entity['name']} · {index + 1}/{len(batches)}",
+                execute=lambda facts=facts, validate=validate: request_json(
+                    self.settings, [
+                        {"role": "system", "content": KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
+                    ], validate, self.check,
+                ), percent=percent, input_size=len(json.dumps(facts, ensure_ascii=False)),
             ))
-            paragraphs.extend(value["paragraphs"])
-        entity.update(synthesis=paragraphs, synthesis_status="ready", synthesis_model=self.config_hash)
+        values = agent.run(actions, "synthesis")
+        complete = all(value is not None for value in values)
+        paragraphs = [paragraph for value in values if value is not None for paragraph in value["paragraphs"]]
+        if complete and len(batches) > 1:
+            allowed = set(entity["source_ids"])
+            compact = [{"fact_id": p["fact_ids"][0], "fact_ids": p["fact_ids"], "summary": p["text"]}
+                       for p in paragraphs]
+            action = AgentAction(
+                kind="synthesis", key=f"{entity['entity_id']}:overview",
+                fingerprint=digest([self.config_hash, KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT, compact]),
+                label=f"整合档案：{entity['name']}",
+                execute=lambda: request_json(self.settings, [
+                    {"role": "system", "content": KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(compact, ensure_ascii=False)},
+                ], lambda value: validate(value, allowed), self.check), percent=percent,
+                input_size=len(json.dumps(compact, ensure_ascii=False)),
+            )
+            overview = agent.run([action], "synthesis")[0]
+            complete = overview is not None
+            paragraphs = overview["paragraphs"] if complete else []
+        entity.update(synthesis=paragraphs if complete else [],
+                      synthesis_status="ready" if complete else "pending", synthesis_model=self.config_hash,
+                      synthesis_version=digest(KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT))
 
     def run(self, chapters):
         selected = select_chapters(chapters, self.request)
@@ -196,15 +246,9 @@ class ExtractionWorker:
         by_chapter = {chapter["id"]: [] for chapter in selected}
         agent = ExtractionAgent(self)
         extraction_actions = [
-            AgentAction(
-                kind="extract",
-                key=part["segment_id"],
-                fingerprint=digest([self.config_hash, part]),
-                label=f"提取第 {chapter['chapter_no']} 章 · 分段 {index + 1}/{len(chunks)}",
-                execute=lambda part=part: extract_inputs(self.settings, [part], self.check),
-                chapter_id=chapter["id"],
-                force=self.request.get("force", False),
-                percent=10 + int(index / max(len(chunks), 1) * 55),
+            self.extraction_action(
+                part, f"提取第 {chapter['chapter_no']} 章 · 分段 {index + 1}/{len(chunks)}",
+                10 + int(index / max(len(chunks), 1) * 55),
             )
             for index, (chapter, part) in enumerate(chunks)
         ]
@@ -214,38 +258,34 @@ class ExtractionWorker:
                 by_chapter[action.chapter_id].append(payload)
         staged = {}
         for chapter in selected:
-            # A chapter with no successful segment is left out of ``staged`` so
-            # an older published extraction cannot be erased by a failed retry.
-            if not by_chapter[chapter["id"]]:
-                self.log("warning", f"第 {chapter['chapter_no']} 章没有成功完成的提取分段，保留上一版本")
+            # Publish only complete chapters, retaining older complete results
+            # when any segment of a long chapter is unavailable.
+            expected = sum(part["chapter_id"] == chapter["id"] for _, part in chunks)
+            if len(by_chapter[chapter["id"]]) != expected:
+                self.log("warning", f"第 {chapter['chapter_no']} 章分段未全部完成，保留上一版本")
                 continue
             payload = combine(by_chapter[chapter["id"]])
             questions = payload["questions"]
             seen = {part["segment_id"] for part in segments(chapter)}
-            lookup_actions = []
             for round_no in range(2):
                 if not questions:
                     break
                 inputs = lookup_segments(selected, chapter, questions, seen)
                 if not inputs:
                     break
-                lookup_actions.append(
-                    AgentAction(
-                        kind="lookup",
-                        key=f"{chapter['id']}:{round_no}",
-                        fingerprint=digest([self.config_hash, scope_hash, inputs, questions]),
-                        label=f"补查第 {chapter['chapter_no']} 章 · 第 {round_no + 1}/2 轮",
-                        execute=lambda inputs=inputs, questions=questions: extract_inputs(
-                            self.settings, inputs, self.check, questions
-                        ),
-                        chapter_id=chapter["id"],
-                        force=self.request.get("force", False),
-                        percent=67,
-                    )
+                action = AgentAction(
+                    kind="lookup",
+                    key=f"{chapter['id']}:{round_no}",
+                    fingerprint=digest([self.config_hash, scope_hash, inputs, questions]),
+                    label=f"补查第 {chapter['chapter_no']} 章 · 第 {round_no + 1}/2 轮",
+                    execute=lambda inputs=inputs, questions=questions: extract_inputs(
+                        self.settings, inputs, self.check, questions
+                    ),
+                    chapter_id=chapter["id"],
+                    force=self.request.get("force", False),
+                    percent=67,
                 )
-                # The next question set depends on the previous answer, so the
-                # agent executes lookup rounds one at a time below.
-                supplement = agent.run([lookup_actions[-1]], "lookup")[0]
+                supplement = agent.run([action], "lookup")[0]
                 if supplement is None:
                     break
                 payload = combine([payload, supplement])
@@ -257,6 +297,8 @@ class ExtractionWorker:
                     f"第 {chapter['chapter_no']} 章仍有 {len(questions)} 个待核实问题", now(),
                 ))
             staged[chapter["id"]] = (chapter, payload)
+        if not staged:
+            raise RuntimeError("本轮没有完整提取成功的章节，已保留检查点和上一版本，请续跑")
         results = {chapter["id"]: (chapter, payload) for chapter, payload in knowledge.load_results(self.db, self.book["book_id"])}
         results.update(staged)
         results = sorted(results.values(), key=lambda pair: pair[0]["chapter_no"])
@@ -267,27 +309,22 @@ class ExtractionWorker:
             (self.book["book_id"],),
         )
         summaries, invalid = knowledge.project(results, previous, decisions)
-        people = summaries["characters"]
-        for index, entity in enumerate(people):
-            self.step("synthesis", f"人物综合 {index + 1}/{len(people)}：{entity['name']}",
-                      75 + int(index / max(len(people), 1) * 20))
-            if entity["synthesis_status"] != "ready" or entity.get("synthesis_model") != self.config_hash:
-                try:
-                    self.synthesize(entity)
-                except Cancelled:
-                    raise
-                except Exception as exc:
-                    if not failures.is_recoverable(exc):
-                        raise
-                    self.record_failure("synthesis", entity["entity_id"], f"人物综合：{entity['name']}", exc)
-                    entity.update(synthesis=[], synthesis_status="pending", synthesis_model=self.config_hash)
+        entities = [entity for kind in ("characters", "items", "world_locations") for entity in summaries[kind]
+                    if any(fact.get("sources") for fact in entity["evidence"])]
+        for index, entity in enumerate(entities):
+            if (entity["synthesis_status"] != "ready" or entity.get("synthesis_model") != self.config_hash
+                    or entity.get("synthesis_version") != digest(KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT)):
+                self.synthesize(entity, agent, 75 + int(index / max(len(entities), 1) * 20))
         self.step("publish", "正在原子发布资料", 98)
         with self.db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             task = conn.execute("SELECT cancel_requested,status FROM tasks WHERE id=?", (self.task_id,)).fetchone()
             if task["cancel_requested"] or task["status"] != "running":
                 raise Cancelled()
-            revision = conn.execute("SELECT knowledge_revision FROM books WHERE book_id=?", (self.book["book_id"],)).fetchone()[0]
+            revision = self.db.parent.one(
+                "SELECT knowledge_revision FROM books WHERE book_id=?",
+                (self.book["book_id"],),
+            )["knowledge_revision"]
             if revision != self.book["knowledge_revision"]:
                 raise RuntimeError("资料版本已改变，请重新提取")
             for chapter, payload in staged.values():
@@ -303,9 +340,16 @@ class ExtractionWorker:
             message = f"提取完成，累计覆盖 {len(results)}/{len(chapters)} 章"
             if self.failures:
                 message += f"，{len(self.failures)} 个动作待续跑"
+            error_message = self.failures[0]["error_message"] if self.failures else None
             conn.execute("UPDATE tasks SET status=?,stage='completed',progress=100,current_step=?,error_message=?,updated_at=? WHERE id=?",
-                         (status, message, message if self.failures else None, now(), self.task_id))
-            conn.execute("UPDATE books SET status='parsed',progress=100,err_message=NULL,updated_at=? WHERE book_id=?",
-                         (now(), self.book["book_id"]))
+                         (status, message, error_message, now(), self.task_id))
             conn.execute("INSERT INTO task_logs VALUES(?,?,?,?,?)",
                          (identifier("log"), self.task_id, "info", message, now()))
+        self.db.parent.execute(
+            "UPDATE books SET knowledge_revision=knowledge_revision+1 WHERE book_id=?",
+            (self.book["book_id"],),
+        )
+        self.db.parent.execute(
+            "UPDATE books SET status='parsed',progress=100,err_message=NULL,updated_at=? WHERE book_id=?",
+            (now(), self.book["book_id"]),
+        )

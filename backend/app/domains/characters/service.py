@@ -26,8 +26,14 @@ def card_markdown(entry):
     for label, key in (("简介", "summary"), ("身份", "identity"), ("外貌", "appearance"),
                        ("性格", "personality"), ("台词", "speech"), ("关键经历", "key_events"),
                        ("关系", "relationships")):
-        if entry.get(key):
+        if entry.get(key) and not (key == "summary" and entry.get("synthesis")):
             sections.append(f"## {label}\n\n{text(entry[key])}")
+    changes = []
+    for key, label in (("identity", "身份"), ("state_changes", "状态"), ("relationships", "关系")):
+        for change in entry.get("field_history", {}).get(key, []):
+            changes.append((change["chapter_no"], f"### {change['chapter']} · {label}\n\n{text(change['value'])}"))
+    if changes:
+        sections.append("## 按章变化\n\n" + "\n\n".join(value for _, value in sorted(changes, key=lambda c: c[0])))
     if entry.get("evidence"):
         sections.append("## 章节依据\n\n" + "\n\n".join(
             f"### {item['chapter']}\n\n{text({k: v for k, v in item.items() if k not in {'chapter', 'name'}})}"
@@ -56,7 +62,7 @@ class CharacterService:
         content = payload.content
         entry = None
         if payload.source_entity_id:
-            entity = self.repo.one(
+            entity = self.repo.database.book_database(payload.book_id).one(
                 "SELECT content FROM knowledge_entities WHERE id=? AND book_id=? AND kind='characters'",
                 (payload.source_entity_id, payload.book_id),
             )
@@ -64,7 +70,10 @@ class CharacterService:
                 raise HTTPException(404, "来源人物不存在")
             entry = json.loads(entity["content"])
         if not content:
-            summary = self.repo.summary(payload.book_id, "characters")
+            summary = self.repo.database.book_database(payload.book_id).one(
+                "SELECT content FROM summaries WHERE book_id=? AND type=?",
+                (payload.book_id, "characters"),
+            )
             matches = [item for item in json.loads(summary["content"]) if item["name"] == payload.name] if summary else []
             if entry is None and len(matches) > 1:
                 raise HTTPException(422, "存在同名人物，请指定 source_entity_id")

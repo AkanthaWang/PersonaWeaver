@@ -88,16 +88,19 @@ OpenAI 兼容服务的地址填写到 `/v1` 等 API 前缀，或完整 `/chat/co
 ```text
 db/
   agent/                 # 模型配置 models.json / settings.json
-  personaweaver.sqlite3
-  personaweaver.sqlite3-wal
-  personaweaver.sqlite3-shm
+  personaweaver.sqlite3  # 用户、作品索引、模型设置、角色卡和会话
   uploads/
   avatars/
-  novel/                 # unified.txt、逐章 TXT 和 chapters.json
+  novel/
+    <book_id>/
+      extraction.sqlite3 # 本作品的章节、提取结果、资料、任务与检查点
+      unified.txt
+      chapters/
+      chapters.json
   backups/
 ```
 
-数据库存储用户、令牌哈希、作品、章节、任务、日志、提取结果、资料、角色卡、会话和消息。源文件和头像在本地文件目录。章节解析结果同时导出到 novel/<book_id>/，包括清洗后的 unified.txt、chapters/0001.txt 等逐章文本及章节来源信息 chapters.json；章节列表接口返回 text_path。重解析会替换该书导出目录，删除书籍时会清理对应目录。启动时自动初始化版本 1 schema。
+主数据库存储用户、令牌哈希、作品索引、模型配置、角色卡、会话和消息。每本作品目录内的 `extraction.sqlite3` 存储该作品的章节、任务、任务日志、提取结果、资料汇总、实体归并、向量缓存和提取检查点。源文件和头像在本地文件目录。章节解析结果同时导出到 `novel/<book_id>/`，包括清洗后的 `unified.txt`、`chapters/0001.txt` 等逐章文本及章节来源信息 `chapters.json`；章节列表接口返回 `text_path`。重解析只替换正文导出文件，不会删除作品数据库。删除书籍时会清理整个作品目录。启动时会初始化主库和作品库 schema，并把旧版本主库中的作品数据迁移到对应作品库。
 模型与 Provider 配置由 `db/agent/models.json` 与 `db/agent/settings.json` 持久化（可通过 `PERSONAWEAVER_AGENT_DIR` 覆盖）；设置页保存或激活的模型会写入 `settings.json`，下次启动优先从该文件加载。
 
 可在启动进程前设置环境变量：
@@ -121,8 +124,8 @@ $env:PERSONAWEAVER_DB_PATH = "D:\PersonaWeaverData\personaweaver.sqlite3"
 - 同一作品同时只能有一个解析或提取任务。
 - 模型请求配置包含超时；错误会写入任务和日志，不会生成模拟结果冒充成功。
 - 长章节优先按段落切分，单段最多 6000 个 Unicode 字符、相邻段最多重叠 300 字符，所有分段完整处理。
-- 提示词集中放在 `backend/app/ai/prompts/`：`extraction.py` 保存主提取、受控补查、结构修复、人物综合和旧版兼容提示；`conversation.py` 保存对话默认系统提示与上下文压缩/分支摘要；`protocol.py` 保存协议级 JSON 指令。管道、provider 和领域代码只引用这些常量，不再内嵌提示词。
-- 所选章节、补查及人物综合全部成功后，选章提取、累计资料、实体映射和资料版本在一个数据库事务中更新；失败或取消不改上一轮已发布结果。
+- 提示词集中放在 `backend/app/ai/prompts/`：`extraction.py` 保存主提取、受控补查、结构修复、Agent 恢复决策、人物综合和旧版兼容提示；`conversation.py` 保存对话默认系统提示与上下文压缩/分支摘要；`protocol.py` 保存协议级 JSON 指令。管道、provider 和领域代码只引用这些常量，不再内嵌提示词。
+- 完整成功的章节、累计资料、实体映射和资料版本在一个数据库事务中更新。失败章节保留上一轮结果；补查失败保留待核实问题，人物综合失败保留事实并隐藏未完成综合。至少一个章节完整成功才允许发布；整轮失败或取消不改上一轮已发布结果。
 - 增量提取保留范围外已发布章节；默认复用同原文、模型及流程版本的检查点，强制重算仅重新提取选定章节。资料页累计展示所有已发布章节，不提供按章无剧透快照。
 - 已有提取结果的作品不能重新解析，以避免章节与已有依据失配；需要上传新版本。
 - 四类资料为人物、剧情、物品、世界与地点。同名只作为候选；相同身份且无冲突的人物、同一处原文记录或明确别名依据才能自动归并，其余保留独立条目待确认。关系、身份和物品归属变化按章保留。
@@ -134,28 +137,32 @@ $env:PERSONAWEAVER_DB_PATH = "D:\PersonaWeaverData\personaweaver.sqlite3"
 - 已创建的角色卡是可编辑资产，后续重新提取不会自动覆盖角色卡。
 - 会话使用最近 40 条消息及当前角色卡正文；不具备无限上下文。
 - 模型回复成功后才把本轮用户消息与回复一并落库。请求失败时页面保留输入以便重试。
-- 任务详情支持进度、分段明细、复用数量、取消和失败续跑。取消在当前模型请求返回或超时后停止；正式发布持有事务锁并再次检查取消标记，已发布完成的任务不能取消。
-- `extraction_units` 保存分段、补查和人物综合检查点；`knowledge_entities` 保存实体映射；`entity_resolutions` 保存人工决定。任务仅保存请求范围、模型 Profile 引用与配置/输入指纹，不保存 API Key。
+- 任务详情支持进度、分段明细、恢复决策、复用数量、取消和失败/部分完成续跑。取消在当前模型请求返回或超时后停止；正式发布持有事务锁并再次检查取消标记，已发布完成的任务不能取消。
+- `extraction_units` 保存分段、恢复决策、补查和人物综合检查点；`knowledge_entities` 保存实体映射；`entity_resolutions` 保存人工决定。任务仅保存请求范围、模型 Profile 引用与配置/输入指纹，不保存 API Key。
 - 服务重启将进行中的任务标为失败，保留成功检查点，用户手动续跑创建关联新任务；原文或模型配置变化时拒绝续跑并要求重新提取。补查缓存还绑定可读范围，不将旧任务范围外资料带入本轮。没有跨进程队列和自动付费恢复。
 - 结构或引文校验错误允许一次修复；超时、限流和临时服务错误最多重试两次，鉴权错误直接失败。任务只在配置的模型上运行，不自动更换提供商。
 
-提取流程为固定程序编排，不依赖原生 function calling。本轮不包含对话工具、MCP 或长期记忆。新表与字段按现有版本 1 的增量初始化规则添加；旧提取和角色卡保留，旧资料在下次提取时纳入累计事实视图。
+提取使用受限的 `ExtractionAgent` 执行循环，而不是把整本书视为一个不可分割的 workflow。章节分段、受控补查和人物综合都是独立动作，Agent 根据动作失败观察在有限次数内选择 `retry`、`split` 或 `skip`；程序校验工具可用性、恢复深度和输出结构。未知错误、取消和资料版本冲突仍会终止任务，结构错误、空输出和已耗尽底层重试的传输错误可以跳过当前动作并继续其他动作。成功章节才会进入原子发布，失败章节保留上一轮结果。任务可能以 `completed_with_warnings` 完成，详情页展示跳过检查点并允许续跑。
+
+阶段顺序仍由程序约束，模型只决定失败动作的恢复方式，恢复深度最多 2。决策通过普通 JSON 输出，不要求模型支持原生工具调用；只有长于 1000 字符的原文分段提供 `split`。网络不可用时不额外请求模型决策；决策格式错误或选择未授权工具时保留失败并继续，鉴权错误直接终止。续跑创建新任务，复用完整检查点并重新执行未完成动作。
+
+提取 Agent 不负责事实判断或直接写入资料；模型只提供结构化事实和恢复建议，后端负责原文引文校验、检查点、归并、权限和发布事务。本轮不包含对话工具、MCP 或长期记忆。新表与字段按现有版本 1 的增量初始化规则添加；旧提取和角色卡保留，旧资料在下次提取时纳入累计事实视图。
 
 ## 6. 备份与恢复
 
-创建数据库一致性快照（包含已提交的 WAL 事务）：
+创建数据库一致性快照（包含已提交的 WAL 事务；同时备份主库和每本作品的 `extraction.sqlite3`）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m backend.scripts.backup_local
 ```
 
-指定新的目标文件：
+指定新的主库目标文件：
 
 ```powershell
 .\.venv\Scripts\python.exe -m backend.scripts.backup_local --output "D:\Backups\personaweaver.sqlite3"
 ```
 
-脚本拒绝覆盖已有文件。不能在数据库运行时只复制 `.sqlite3` 主文件作为完整备份。
+脚本拒绝覆盖已有文件；作品库会以 `<主库名>-<book_id>-extraction.sqlite3` 写入同一目录。不能在数据库运行时只复制 `.sqlite3` 主文件作为完整备份。
 
 完整备份应同时包含数据库、`uploads` 和 `avatars`。为了保持数据库与文件的一致性，先停止后端，再创建数据库快照并复制文件目录；不要把带模型密钥的备份公开分享。
 
@@ -181,7 +188,7 @@ npm run build
 
 浏览器验收脚本为 `frontend/test/ui-smoke.cjs`，需可用的 Playwright、Chrome（或设置 `PW_TEST_BROWSER=msedge`）和 Python 后端依赖。构建后运行 `node test/ui-smoke.cjs`；脚本使用临时数据库及本地端口 18761，验证免登录路由、资料和头像持久化、模型说明以及 320–1440px 布局，截图写入 `.docs/plan/assets/`。可通过 `NODE_PATH` 指定 Playwright 安装位置、`PW_TEST_PYTHON` 指定 Python。
 
-作品提取验收为 `node frontend/test/extraction-smoke.cjs`，先构建前端；使用独立临时数据库、模型替身和端口 18763，覆盖模型/范围选择、失败续跑、原文高亮、实体拆分、角色卡和 320–1440px 响应式布局。支持 `NODE_PATH`、`PW_TEST_PYTHON`、`PW_TEST_EXECUTABLE`，截图位于 `.docs/plan/assets/2026-10-17-extraction/`。替身仅存在于测试模块，不由正式应用导入；不调用真实模型。
+作品提取验收为 `node frontend/test/extraction-smoke.cjs`，先构建前端；使用独立临时数据库、模型替身和端口 18763，覆盖模型/范围选择、失败续跑、Agent 跳过中间章节后继续、部分发布与续跑补齐、原文高亮、实体拆分、角色卡和 320–1440px 响应式布局。支持 `NODE_PATH`、`PW_TEST_PYTHON`、`PW_TEST_EXECUTABLE`；`PW_TEST_OUTPUT` 指定截图目录，默认 `.docs/plan/assets/2026-10-17-extraction/`。2026-10-19 的 Agent 验收截图保存在 `.docs/plan/assets/2026-10-19-extraction-agent/`。替身仅存在于测试模块，不由正式应用导入；不调用真实模型。
 
 真实模型提供商联调需用户授权后单独进行。2026-10-17 已使用默认 `ecnu-max`（ECNU Responses 协议）在隔离临时数据库完成单章短文验收：连接测试、1 章提取和 2 个人物综合成功，覆盖 2 人物、3 物品、2 剧情、3 地点；6 条引文按 Unicode 偏移逐字匹配原文，2 段综合均绑定已有事实 ID，任务无待核实问题，输出未包含 API Key。验证中发现模型偶尔将 `identity/appearance/personality` 等标量返回为数组，严格校验按预期拒绝；提取提示词和修复提示已明确标量必须为单个字符串、禁止数组，复测通过。另对 `GLM-4.5-Air` 做隔离诊断：`max_tokens=2048` 时输出被截断（`total_tokens=3139`、消息内容为空）；提高到 8192 后不再截断，但仍出现 `behavior/speech` 字符串和剧情事件缺少 `name`，说明该模型不适合严格提取，建议使用 `ecnu-max`。真实模型请求仅用于本次小范围验收，未写入正式数据库；结果记录在 `.docs/plan/assets/2026-10-17-extraction/real-model-validation.json`。默认 Conda `pytorch` 若仍为 Python 3.9，请使用 Python >=3.10 的独立环境运行本项目，不应为了运行测试直接升级现有训练环境。
 
@@ -199,7 +206,7 @@ npm run build
 | 提取 | POST `/extract`；GET `/tasks`、`/tasks/{id}`、`/task-logs` |
 | 任务控制 | GET `/tasks/{id}/units`；POST `/tasks/{id}/cancel`、`/tasks/{id}/retry` |
 | 结果 | GET `/chapter-extractions?book_id=...`、`/summaries?book_id=...` |
-| 实体校正 | POST `/books/{id}/entity-resolutions`；DELETE `/books/{id}/entity-resolutions/{resolution_id}?revision=...`（忽略失效决定） |
+| 实体校正 | POST `/books/{id}/entity-resolutions`；DELETE `/books/{id}/entity-resolutions/{resolution_id}?revision=...`（忽略失效决定）；POST `/books/{id}/rebuild-knowledge?revision=...`（整理已有资料） |
 | 角色卡 | GET/POST `/cards`；PATCH/DELETE `/cards/{id}`；GET `/cards/{id}/export` |
 | 对话 | GET/POST `/conversations`；GET/PATCH/DELETE `/conversations/{id}` |
 | 消息 | POST/DELETE `/conversations/{id}/messages` |
@@ -218,3 +225,32 @@ curl.exe -X POST "http://127.0.0.1:8000/api/v1/books?filename=story.txt" `
   -H "Content-Type: application/octet-stream" `
   --data-binary "@<本地文本文件路径>"
 ```
+
+## 9. 提取前后端参考设计
+
+提取相关设计参考 [Novel Fan Graph](https://github.com/LucianaiB2004/novel-fan-graph)。2026-10-19 已核对该仓库的 README、`references/extraction-prompt.md`、`references/data-schema.md` 和 `references/acceptance-checklist.md`；以下为设计参考，尚未实现的能力不代表当前功能。
+
+| 参考点 | 本项目对应位置与采用方向 |
+| --- | --- |
+| 证据优先的原子事实 | `backend/app/ai/prompts/extraction.py` 与 `backend/app/ai/extraction_pipeline.py`；保持逐字引文校验和程序生成 ID，完善短引文、单条事实及禁止推断关系的规则 |
+| 人物状态与关系按章演化 | `backend/app/domains/documents/knowledge.py`；保留按章事实和明确的归并依据，后续图谱需建立可追溯的实体引用 |
+| 分批提取与跨批归并 | 沿用本项目按章分段、检查点和有限恢复，参考其分离事实提取与归并的思路；批次大小按输入与输出限制决定 |
+| 章节导航与事件时间线 | `frontend/src/domains/documents/views/SummaryView.vue`；优先按章组织剧情事实，并复用 `ChapterReader.vue` 回查原文 |
+| 人物关系、场景与势力视图 | 后续需先明确数据契约、实体引用和变化章节；地点只表达有依据的层级与连接，不推测坐标 |
+| 数据与浏览器共同验收 | 后端校验结构、引文和归并，前端检查章节切换、详情、原文定位及窄屏布局 |
+
+参考项目的“第 N 章防剧透”依赖姓名揭晓、身份、状态和关系阶段等历史数据。当前作品资料是累计视图，仅过滤事实来源章节仍可能显示后续姓名或综合描述；防剧透需另行设计历史投影及测试。
+
+缺失章节占位也需先明确小说原始章号与本地章节顺序索引的对应关系，避免改变既有章节定位。参考项目的固定十章批次和模型分配 ID 不直接套用到当前提取协议。
+
+### 2026-10-19 实体档案与章节时间线
+
+作品资料已采用实体档案与独立剧情时间线。同名资料先规范全角字符、空白和大小写；人物按同名及短的明确身份标签检查，身份栏中的长描述句不当作稳定身份标签；物品/地点按同名及明确类型冲突检查。冲突时，无身份/类型的中间记录不会作为桥梁强行合并；显式别名仍需原文同时出现姓名与别名。不同实体、同名冲突及人工拆分边界保持可确认、可校正。
+
+投影汇总全部描述字段和列表字段，列表去重，标量采用最后一次明确记载值。`field_history` 保存字段值、章节和事实 ID，重复连续值只补充依据；归属返回旧值时仍产生新的阶段。实体同时带 `first_chapter`、`last_chapter`、`chapter_id`、`chapter_no` 和 `projection_version`。详情只显示一份概览，再展示按章变化，原始章节记录折叠为证据，可展开并回查原文。
+
+剧情按来源章节号与原文偏移排序，同名但跨章的事件保持独立；仅同引文、同描述的重复事件可以去重。`time` 保留原文时间表达，不猜测相对日期，也不把倒叙强行转换成故事绝对时间。前端支持来源章节筛选、搜索及原文定位；来源筛选仍为累计资料的筛选，不代表防剧透快照。
+
+新提取对人物、物品和世界/地点生成综合档案；较长实体先分批综合，再生成一份最终档案，避免拼接多份简介。综合缓存包含提示词版本并校验引用事实 ID。旧资料缺少逐字引文时保留原记录，不为其额外生成无法回查的模型档案。
+
+“整理已有资料”调用 `POST /books/{id}/rebuild-knowledge?revision=...`，仅使用已保存的章节事实重建四类资料，保留有效人工拆分/合并与未变化档案的综合结果，不调用模型，也不修改原文章节和用户编辑的角色卡。旧分组发生合并后综合档案会待更新，界面先显示已有描述与按章字段；后续正常提取可生成新的综合档案。提取任务执行中或版本过期返回 409。

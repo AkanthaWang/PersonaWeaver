@@ -7,6 +7,11 @@ EXTRACTION_SYSTEM_PROMPT = (
     "重复引文可用 occurrence（从1开始）定位。禁止输出事实ID、实体ID或位置。"
     "四个数组中的每个条目都必须含非空 name 和至少一条 evidence，剧情事件也不例外。"
     "每条资料仅描述同一人物或实体；每个非空事实都必须受所附引文支持，必要时拆成多条。"
+    "同一片段的同一实体只输出一条记录，合并其不同描述；姓名与专名保持原文，不用描述句作名称。"
+    "证据尽量不超过60个汉字，但须完整支持事实；人物关系不能仅由同场或对话推断为朋友、敌人或爱慕。"
+    "剧情只提取改变状态、关系、归属、地点或故事走向的离散事件，按原文先后输出；"
+    "普通寒暄、无结果动作和重复描写不独立成事件。同名但不同时期的事件不能混写。"
+    "time 仅记录原文明说的时间，不推测日历或将叙述顺序当作故事绝对时间。"
     "人物可含 summary、identity、appearance、personality、aliases、behavior、speech、key_events、"
     "state_changes、relationships（target_name、relation）；别名必须有引文同时明确指明姓名和别名。"
     "其他资料可含 description、time、involved_characters、related_characters、owner、significance、type。"
@@ -32,11 +37,15 @@ EXTRACTION_REPAIR_PROMPT = (
     "即使只有一个值也要用数组表示；四个数组中的每个条目都必须含 name 和 evidence。"
 )
 
-CHARACTER_SYNTHESIS_SYSTEM_PROMPT = (
-    "基于所给人物事实生成简洁档案，不推测。严格输出 "
+KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT = (
+    "基于所给同一实体的全部事实生成一份去重、简洁的综合档案，不推测。严格输出 "
     '{"paragraphs":[{"text":"综合描述","fact_ids":["已有事实ID"]}]}。'
-    "每段都必须引用已有事实ID；保留章节顺序与状态变化，区分不同时期的描述，不要把冲突强行统一。"
+    "每段都必须引用已有事实ID；第一段给出唯一的整体介绍，不要逐章重复简介。"
+    "后续段落按章节概述真正新增或变化的信息。人物写身份、性格与经历，物品写特征、作用与归属变化，"
+    "世界和地点写设定、所属与发生的变化。保留章节顺序，区分不同时期，不把冲突强行统一。"
+    "若输入是分批摘要，可引用其中 fact_id 或 fact_ids，仍只合成一份档案，不拼接重复简介。"
 )
+CHARACTER_SYNTHESIS_SYSTEM_PROMPT = KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT
 
 EXTRACTION_AGENT_SYSTEM_PROMPT = (
     "你是作品提取 Agent，负责根据工具执行观察选择恢复动作。"
@@ -76,6 +85,7 @@ LEGACY_USER_PROMPT_TEMPLATE = "\n【提取任务】：{description}\n【原文�
 
 __all__ = [
     "CHARACTER_SYNTHESIS_SYSTEM_PROMPT",
+    "KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT",
     "EXTRACTION_LOOKUP_SUFFIX",
     "EXTRACTION_AGENT_SYSTEM_PROMPT",
     "EXTRACTION_REPAIR_PROMPT",

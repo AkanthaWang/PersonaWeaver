@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 (async () => {
   const root = path.resolve(__dirname, "../..");
   const data = mkdtempSync(path.join(tmpdir(), "personaweaver-extraction-"));
-  const output = path.join(root, ".docs/plan/assets/2026-10-17-extraction");
+  const output = process.env.PW_TEST_OUTPUT || path.join(root, ".docs/plan/assets/2026-10-17-extraction");
   mkdirSync(output, { recursive: true });
   const base = "http://127.0.0.1:18763";
   const server = spawn(process.env.PW_TEST_PYTHON || "python",
@@ -19,6 +19,7 @@ const assert = require("node:assert/strict");
   let logs = "", browser, page;
   server.stderr.on("data", chunk => { logs += chunk; });
   async function screenshot(name) {
+    await page.mouse.move(0, 0);
     await page.waitForFunction(() => !document.querySelector(".el-message"));
     await page.evaluate(async () => {
       await Promise.all(document.getAnimations().filter(animation =>
@@ -33,6 +34,14 @@ const assert = require("node:assert/strict");
     });
     assert.ok(response.ok, `${route}: ${response.status} ${await response.clone().text()}`);
     return response.json();
+  }
+  async function waitTask(taskId) {
+    for (let i = 0; i < 100; i++) {
+      const task = await api(`/tasks/${taskId}`);
+      if (!["pending", "running"].includes(task.status)) return task;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    throw new Error("Task timeout: " + taskId);
   }
   try {
     for (let i = 0; i < 80; i++) {
@@ -76,6 +85,33 @@ const assert = require("node:assert/strict");
     await screenshot("task-desktop.png");
     await page.locator(".el-drawer__close-btn:visible").last().click();
     await page.getByRole("button", { name: "查看资料", exact: true }).click();
+    await page.locator(".asset-item").first().waitFor();
+    assert.equal(await page.locator(".asset-item").count(), 1, "one archive per character");
+    await page.getByRole("button", { name: "整理已有资料", exact: true }).click();
+    await page.getByText("已有资料已整理", { exact: true }).waitFor();
+    assert.equal(await page.locator(".asset-item").count(), 1);
+    await page.getByRole("tab", { name: "剧情 (3)", exact: true }).click();
+    await page.locator(".timeline-event").first().waitFor();
+    assert.equal(await page.locator(".timeline-event").count(), 3);
+    assert.deepEqual(await page.locator(".chapter-marker").allTextContents(), ["第 1 章", "第 2 章", "第 3 章"]);
+    await screenshot("timeline-desktop.png");
+    await page.locator(".chapter-filter .el-select__wrapper").click();
+    await page.getByRole("option", { name: "第 2 章", exact: true }).click();
+    assert.equal(await page.locator(".timeline-event").count(), 1);
+    await page.locator(".chapter-filter .el-select__wrapper").click();
+    await page.getByRole("option", { name: "第 1 章", exact: true }).click();
+    await page.locator(".chapter-filter .el-select").hover();
+    await page.locator(".chapter-filter .el-select__clear").click();
+    await page.getByRole("tab", { name: "物品 (1)", exact: true }).click();
+    assert.equal(await page.locator(".asset-item").count(), 1, "one archive per item");
+    await page.getByRole("button", { name: "查看", exact: true }).first().click();
+    await page.getByText("按章变化", { exact: true }).waitFor();
+    assert.deepEqual(await page.locator(".entity-history .el-timeline-item__content p").allTextContents(), ["林川", "阿遥", "林川"]);
+    await screenshot("item-history-desktop.png");
+    await page.locator(".el-drawer__close-btn:visible").last().click();
+    await page.getByRole("tab", { name: "世界与地点 (1)", exact: true }).click();
+    assert.equal(await page.locator(".asset-item").count(), 1, "one archive per location");
+    await page.getByRole("tab", { name: "角色 (1)", exact: true }).click();
     await page.getByRole("button", { name: "查看", exact: true }).first().click();
     await page.getByText("综合档案", { exact: false }).first().waitFor();
     await page.locator(".source-quote button").first().click();
@@ -101,14 +137,47 @@ const assert = require("node:assert/strict");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "detail overflow " + width);
       if (width === 390) await screenshot("summary-mobile.png");
       await page.locator(".el-drawer__close-btn:visible").last().click();
+      await page.getByRole("tab", { name: "剧情 (3)", exact: true }).click();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "timeline overflow " + width);
+      if (width === 390) await screenshot("timeline-mobile.png");
+      await page.getByRole("tab", { name: "角色 (2)", exact: true }).click();
     }
     await page.goto(base + "/upload");
     await page.getByRole("button", { name: "提取作品资料", exact: true }).click();
     await page.getByText("提取模型：验收提取模型").waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "extract dialog overflow");
     await screenshot("extract-mobile.png");
+    await page.locator(".el-dialog__headerbtn:visible").last().click();
+    const partialUpload = await fetch(base + "/api/v1/books?filename=agent.txt&title=" + encodeURIComponent("恢复验收"), {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" },
+      body: "第一章 开始\n林川走来。\n\n第二章 故障\n林川行医。局部失败\n\n第三章 继续\n林川离开。",
+    });
+    assert.ok(partialUpload.ok);
+    const partialBook = await partialUpload.json();
+    const parsed = await api(`/books/${partialBook.book_id}/parse`, "POST");
+    assert.equal((await waitTask(parsed.task_id)).status, "completed");
+    const partialTask = await api("/extract", "POST", { book_id: partialBook.book_id });
+    const partial = await waitTask(partialTask.task_id);
+    assert.equal(partial.status, "completed_with_warnings");
+    assert.deepEqual((await api(`/summaries?book_id=${partialBook.book_id}`)).coverage, [1, 3]);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(base + "/");
+    const partialRow = page.locator(".el-table__row").filter({ hasText: "恢复验收" }).filter({ hasText: "资料提取" });
+    await partialRow.getByText("部分完成", { exact: true }).waitFor();
+    await partialRow.getByRole("button", { name: "查看任务", exact: true }).click();
+    await page.getByText("已跳过", { exact: true }).waitFor();
+    await page.getByText("恢复决策", { exact: true }).waitFor();
+    await screenshot("agent-partial-desktop.png");
+    await page.setViewportSize({ width: 320, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "agent drawer overflow");
+    await screenshot("agent-partial-mobile.png");
+    await page.getByRole("button", { name: "续跑", exact: true }).click();
+    await page.locator(".el-drawer:visible").getByText("提取完成，累计覆盖 3/3 章", { exact: true }).waitFor();
+    const repaired = await api(`/summaries?book_id=${partialBook.book_id}`);
+    assert.deepEqual(repaired.coverage, [1, 2, 3]);
+    await screenshot("agent-resumed-mobile.png");
     assert.deepEqual(errors, []);
-    console.log("PASS: range/model dialog, failure/retry, checkpoints, Unicode citation highlight, split, entity-backed card, responsive widths; " + output);
+    console.log("PASS: deduplicated archives, existing-result rebuild, ordered timeline, chapter filter, item ownership history, range/model dialog, checkpoints, citation highlight, split, entity-backed card, responsive widths, agent partial publish/skip/resume; " + output);
   } catch (error) {
     if (page) {
       await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true });

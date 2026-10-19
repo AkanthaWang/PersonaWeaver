@@ -218,6 +218,13 @@ def resolve_entity(book_id: str, payload: ResolutionRequest, user=Depends(curren
     return resolve(db, user["user_id"], book_id, payload)
 
 
+@router.post("/books/{book_id}/rebuild-knowledge")
+def rebuild_knowledge(book_id: str, revision: int = Query(ge=0),
+                      user=Depends(current_user), db=Depends(get_db)):
+    from .knowledge import rebuild
+    return rebuild(db, user["user_id"], book_id, revision)
+
+
 @router.delete("/books/{book_id}/entity-resolutions/{resolution_id}")
 def dismiss_resolution(book_id: str, resolution_id: str, revision: int = Query(ge=0),
                        user=Depends(current_user), db=Depends(get_db)):
