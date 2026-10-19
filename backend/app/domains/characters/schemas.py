@@ -27,4 +27,12 @@ class CardUpdate(BaseModel):
         return CardCreate.clean_name(value)
 
 
-__all__ = ["CardCreate", "CardUpdate"]
+class CardFromCharacter(BaseModel):
+    """Create a role card from one knowledge character of the same book."""
+
+    book_id: str
+    character_id: str
+    overwrite: bool = False
+
+
+__all__ = ["CardCreate", "CardFromCharacter", "CardUpdate"]

@@ -86,3 +86,7 @@ class ReviewResolution(BaseModel):
     action: Literal["approve", "reject", "merge", "verify", "dismiss"]
     target_id: str | None = None
     reason: str = Field(default="", max_length=1000)
+
+
+class SynthesisRequest(BaseModel):
+    profile_id: str | None = None

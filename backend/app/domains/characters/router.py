@@ -5,7 +5,7 @@ from fastapi.responses import Response
 
 from backend.app.core.dependencies import current_user, get_db
 
-from .schemas import CardCreate, CardUpdate
+from .schemas import CardCreate, CardFromCharacter, CardUpdate
 from .service import CharacterService
 
 router = APIRouter()
@@ -19,6 +19,11 @@ def list_characters(book_id: Optional[str] = Query(default=None), user=Depends(c
 @router.post("/cards", status_code=status.HTTP_201_CREATED)
 def create_card(payload: CardCreate, user=Depends(current_user), db=Depends(get_db)):
     return CharacterService(db).create(user["user_id"], payload)
+
+
+@router.post("/cards/from-character")
+def create_card_from_character(payload: CardFromCharacter, user=Depends(current_user), db=Depends(get_db)):
+    return CharacterService(db).from_character(user["user_id"], payload)
 
 
 @router.patch("/cards/{card_id}")

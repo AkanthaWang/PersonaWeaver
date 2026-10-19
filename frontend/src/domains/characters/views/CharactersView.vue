@@ -26,13 +26,26 @@
       <el-button type="primary" :icon="Check" native-type="submit" :loading="saving">保存</el-button>
     </el-form>
   </el-dialog>
-  <el-drawer :model-value="Boolean(preview)" :title="preview?.name" size="700px" @close="preview = null"><pre class="document-text">{{ preview?.content }}</pre></el-drawer>
+  <el-drawer :model-value="Boolean(preview)" :title="preview?.name" size="700px" @close="preview = null">
+    <template v-if="preview">
+      <p v-if="preview.intro" class="preview-intro">{{ preview.intro }}</p>
+      <div class="preview-body">
+        <MarkdownRender mode="chat" :content="preview.content || ''" :final="true" html-policy="escape" :fade="false" :render-code-blocks-as-pre="true" />
+      </div>
+      <div class="preview-actions">
+        <el-button :icon="Edit" @click="editFromPreview">编辑角色卡</el-button>
+        <el-button type="primary" :icon="ChatDotRound" @click="chatFromPreview">开始角色对话</el-button>
+      </div>
+    </template>
+  </el-drawer>
 </template>
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Plus, Search, Refresh, Edit, View, ChatDotRound, Download, Delete, Check } from "@element-plus/icons-vue";
+import MarkdownRender from "markstream-vue";
+import "markstream-vue/index.css";
 import BookPicker from "../../../components/BookPicker.vue";
 import { api, download } from "../../../api/client";
 import { useWorkspaceStore } from "../../../stores/workspace";
@@ -72,8 +85,14 @@ async function startChat(card) {
   try { const conversation = await api.post("/conversations", { card_id: card.id, title: card.name }); router.push({ path: "/chat", query: { conversation: conversation.id } }); }
   catch (error) { report(error); }
 }
+function editFromPreview() { const card = preview.value; preview.value = null; openEditor(card); }
+function chatFromPreview() { const card = preview.value; preview.value = null; startChat(card); }
 watch(() => workspace.selectedId, load);
 onMounted(async () => { try { await workspace.refresh(); await load(); } catch (error) { report(error); } });
-
-
 </script>
+
+<style scoped>
+.preview-intro { margin:0 0 16px; padding:12px 14px; border-radius:10px; background:#f4faf7; border-left:3px solid #82ad9d; color:#3f5750; line-height:1.7; }
+.preview-body { line-height:1.75; }
+.preview-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; gap:8px; padding:12px 0 4px; margin-top:16px; background:#fff; border-top:1px solid #edf1ee; }
+</style>

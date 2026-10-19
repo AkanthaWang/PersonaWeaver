@@ -34,11 +34,32 @@ class KnowledgeService:
 
     def characters(self, user_id, book_id):
         db = self._book_db(user_id, book_id)
-        return db.all(
+        rows = db.all(
             "SELECT * FROM knowledge_characters WHERE book_id=? AND deleted_at IS NULL "
             "ORDER BY frequency DESC,updated_at DESC,canonical_name COLLATE NOCASE",
             (book_id,),
         )
+        summaries = {}
+        for entity in db.all(
+            "SELECT name,content FROM knowledge_entities WHERE book_id=? AND kind='characters'",
+            (book_id,),
+        ):
+            try:
+                content = json.loads(entity["content"])
+            except (TypeError, ValueError):
+                continue
+            summaries[entity["name"].casefold()] = content
+        for row in rows:
+            content = summaries.get(row["canonical_name"].casefold()) or {}
+            row["synthesis"] = content.get("synthesis") or []
+            row["synthesis_status"] = content.get("synthesis_status") or "pending"
+        return rows
+
+    def synthesize_character(self, user_id, book_id, character_id, profile_id=None):
+        from .synthesis import synthesize_character
+
+        self._book_db(user_id, book_id)
+        return synthesize_character(self.repo.database, user_id, book_id, character_id, profile_id)
 
     def create_character(self, user_id, book_id, payload):
         db = self._book_db(user_id, book_id)
