@@ -304,14 +304,19 @@ async function renderRelationGraph() {
   const nodes = characters.value.filter((item) => visibleIds.has(item.id)).map((item) => ({
     id: item.id,
     style: {
+      img: characterAvatarUrl(item.canonical_name),
       labelText: item.canonical_name,
-      size: Math.min(64, 32 + Math.sqrt(item.frequency || 0) * 4),
-      fill: "#eaf4f0",
-      stroke: "#2f6f5e",
-      lineWidth: 1.5,
+      size: Math.min(72, 48 + Math.sqrt(item.frequency || 0) * 4),
+      radius: 999,
+      stroke: "#ffffff",
+      lineWidth: 4,
+      halo: true,
+      haloStroke: "#8db8a8",
+      haloLineWidth: 2,
       labelPlacement: "bottom",
       labelFill: "#1d3b33",
       labelFontSize: 12,
+      labelFontWeight: 650,
       cursor: "pointer",
     },
   }));
@@ -338,8 +343,8 @@ async function renderRelationGraph() {
     container,
     autoResize: true,
     data: { nodes, edges },
-    node: { type: "circle" },
-    layout: { type: "force", preventOverlap: true, nodeSize: 48, linkDistance: 160, collideStrength: 0.9 },
+    node: { type: "image" },
+    layout: { type: "force", preventOverlap: true, nodeSize: 64, linkDistance: 180, collideStrength: 0.9 },
     behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
   });
   await relationGraph.render();
