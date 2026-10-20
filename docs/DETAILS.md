@@ -45,6 +45,8 @@ cd frontend
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
+已通过 `.\scripts\start.cmd` 启动服务时，可使用 `.\scripts\restart.cmd` 停止并重新启动前后端。
+
 前端 `http://127.0.0.1:5173`，API 文档 `http://127.0.0.1:8000/docs`，健康检查 `http://127.0.0.1:8000/health`。
 
 默认仅监听本机。Vite 会在端口占用时尝试下一个端口，以终端输出为准；后端端口占用时需要指定其他端口。使用 `frontend/.env.local` 中的 `PERSONAWEAVER_API_TARGET` 调整代理目标。跨源部署可设置 `VITE_API_BASE_URL`，但同源代理是默认方式。
