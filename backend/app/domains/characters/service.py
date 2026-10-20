@@ -9,7 +9,7 @@ from backend.app.db.database import identifier, now
 from .repository import CharacterRepository
 
 
-INTRO_LIMIT = 180
+INTRO_LIMIT = 220
 # CardUpdate allows 50000 characters; keep generated cards safely editable.
 CONTENT_LIMIT = 48000
 

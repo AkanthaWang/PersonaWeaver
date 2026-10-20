@@ -42,6 +42,12 @@ def facts(book_id: str, character_id: str, user=Depends(current_user), db=Depend
     return service(db).facts(user["user_id"], book_id, character_id)
 
 
+@router.post("/books/{book_id}/knowledge/characters/{character_id}/synthesize")
+def synthesize_character(book_id: str, character_id: str, profile_id: str | None = Query(default=None),
+                         user=Depends(current_user), db=Depends(get_db)):
+    return service(db).synthesize_character(user["user_id"], book_id, character_id, profile_id)
+
+
 @router.post("/books/{book_id}/knowledge/facts", status_code=status.HTTP_201_CREATED)
 def create_fact(book_id: str, payload: FactCreate, user=Depends(current_user), db=Depends(get_db)):
     return service(db).create_fact(user["user_id"], book_id, payload)

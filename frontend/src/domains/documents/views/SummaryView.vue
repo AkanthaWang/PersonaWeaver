@@ -35,7 +35,15 @@
         <div class="character-title-wrap"><img class="knowledge-avatar" :src="characterAvatarUrl(character.canonical_name)" :alt="`${character.canonical_name}头像`" /><div class="character-title"><h2>{{ character.canonical_name }}</h2><p class="muted">{{ aliases(character.aliases_json) || '暂无别名' }}</p></div></div>
         <div class="character-meta"><span class="frequency">出现 {{ character.frequency || 0 }} 次</span><el-tag size="small" :type="character.state === 'active' ? 'success' : 'info'">{{ character.state }}</el-tag></div>
       </div>
-      <p class="character-intro" :class="{ placeholder: !characterIntro(character) }">{{ characterIntro(character) || '暂无介绍，提取到事实后可自动生成。' }}</p>
+      <div class="character-tags">
+        <span v-if="characterIdentity(character)" class="character-tag">身份 · {{ characterIdentity(character) }}</span>
+        <span v-if="character.first_chapter" class="character-tag">第 {{ character.first_chapter }} 章登场</span>
+        <span class="character-tag">{{ relationsOf(character).length }} 条关系</span>
+      </div>
+      <section class="character-profile">
+        <p class="character-profile-label">档案描述</p>
+        <p class="character-intro" :class="{ placeholder: !characterIntro(character) }">{{ characterIntro(character) || '暂无档案描述，打开详情可根据已有事实生成。' }}</p>
+      </section>
       <div class="character-actions">
         <el-button v-if="cardFor(character.canonical_name)" size="small" type="success" plain @click="goCards">已有角色卡</el-button>
         <el-button v-else size="small" type="primary" plain :loading="cardBusy === character.id" @click="createCard(character)">生成角色卡</el-button>
@@ -135,21 +143,39 @@
 
   <ChapterReader v-model="showReader" :book-id="bookId" :chapter-id="citation?.chapter_id" :citation="citation" />
 
-  <el-drawer v-model="detailOpen" :title="detail?.canonical_name || '人物详情'" size="620px" class="character-drawer">
+  <el-drawer v-model="detailOpen" :title="detail?.canonical_name || '人物详情'" size="660px" class="character-drawer">
     <template v-if="detail">
-      <div class="drawer-meta">
-        <el-tag :type="detail.state === 'active' ? 'success' : 'info'">{{ detail.state }}</el-tag>
-        <span class="frequency">出现 {{ detail.frequency || 0 }} 次</span>
-        <span class="muted">{{ aliases(detail.aliases_json) || '暂无别名' }}</span>
+      <div class="drawer-profile">
+        <img class="drawer-avatar" :src="characterAvatarUrl(detail.canonical_name)" :alt="`${detail.canonical_name}头像`" />
+        <div class="drawer-profile-content">
+          <p class="drawer-profile-kicker">人物档案</p>
+          <h2 class="drawer-profile-name">{{ detail.canonical_name }}</h2>
+          <p class="drawer-profile-alias">{{ aliases(detail.aliases_json) || '暂无别名' }}</p>
+          <div class="drawer-profile-meta">
+            <el-tag size="small" :type="detail.state === 'active' ? 'success' : 'info'">{{ detail.state }}</el-tag>
+            <span><strong>{{ detail.frequency || 0 }}</strong> 次出现</span>
+            <span v-if="detail.first_chapter">第 {{ detail.first_chapter }} 章登场</span>
+          </div>
+        </div>
       </div>
-      <section class="drawer-section">
-        <h3>人物介绍</h3>
-        <p v-if="detailIntro" class="character-intro full">{{ detailIntro }}</p>
-        <el-empty v-else-if="!detailSynthesis.length" :image-size="50" description="暂无介绍" />
-        <p v-else class="muted">本人物只有模型归纳结果，已展示在下方综合档案，生成角色卡时自动取用。</p>
+      <section class="drawer-section profile-description">
+        <div class="section-heading">
+          <h3>档案描述</h3>
+          <el-button link type="primary" :loading="synthesisBusy" @click="regenerateProfile">{{ detailProfile ? '重新生成' : '生成档案描述' }}</el-button>
+        </div>
+        <p v-if="detailProfile" class="profile-text">{{ detailProfile }}</p>
+        <p v-else class="profile-empty">暂无档案描述，可根据已有事实生成约 200 字的整体介绍。</p>
+      </section>
+      <section class="drawer-section profile-facts">
+        <div><span>身份</span><strong>{{ detailIdentity || '暂无记录' }}</strong></div>
+        <div><span>登场章节</span><strong>{{ detail.first_chapter ? `第 ${detail.first_chapter} 章` : '暂无记录' }}</strong></div>
+        <div><span>活跃至</span><strong>{{ detail.last_chapter ? `第 ${detail.last_chapter} 章` : '暂无记录' }}</strong></div>
+        <div><span>出现次数</span><strong>{{ detail.frequency || 0 }} 次</strong></div>
+        <div><span>人物关系</span><strong>{{ detailRelations.length }} 条</strong></div>
+        <div><span>状态</span><strong>{{ detail.state || '暂无记录' }}</strong></div>
       </section>
       <section v-if="detailSynthesis.length" class="drawer-section">
-        <h3>综合档案（模型归纳）</h3>
+        <h3>补充档案</h3>
         <p v-for="(paragraph, index) in detailSynthesis" :key="index" class="synthesis-paragraph">{{ paragraph.text }}</p>
       </section>
       <section class="drawer-section">
@@ -166,13 +192,17 @@
       </section>
       <section v-if="detailRelations.length" class="drawer-section">
         <h3>人物关系</h3>
-        <article v-for="relation in detailRelations" :key="relation.id" class="relation-record">
-          <div>
-            <strong>{{ relation.subject_id === detail.id ? detail.canonical_name : characterName(relation.subject_id) }}</strong>
-            <el-tag size="small" effect="plain" class="relation-type">{{ relationLabel(relation.relation_type) }}</el-tag>
-            <strong>{{ relation.object_id === detail.id ? detail.canonical_name : characterName(relation.object_id) }}</strong>
-          </div>
-        </article>
+        <div class="relation-chips">
+          <span
+            v-for="relation in detailRelations"
+            :key="relation.id"
+            class="relation-chip"
+            :class="`relation-chip-${relationCategory(relation.relation_type)}`"
+          >
+            {{ relation.subject_id === detail.id ? characterName(relation.object_id) : characterName(relation.subject_id) }}
+            · {{ relationLabel(relation.relation_type) }}
+          </span>
+        </div>
       </section>
       <div class="drawer-actions">
         <el-button v-if="cardFor(detail.canonical_name)" type="success" @click="goCards">前往角色卡</el-button>
@@ -203,6 +233,7 @@ const characters = ref([]), facts = ref([]), events = ref([]), relations = ref([
 const cards = ref([]), cardBusy = ref("");
 const factsLoading = reactive({}), showReader = ref(false), citation = ref(null);
 const detail = ref(null), detailOpen = ref(false);
+const synthesisBusy = ref(false);
 const chapters = ref([]), collapsedChapters = reactive(new Set());
 const relationView = ref("graph"), graphEl = ref(null);
 let relationGraph = null;
@@ -287,6 +318,7 @@ const characterFacts = (id) => facts.value.filter((item) => item.entity_id === i
 const FACT_LABELS = { summary: "简介", identity: "身份", appearance: "外貌", personality: "性格",
   behavior: "行为", speech: "台词", relationships: "关系", key_events: "关键经历", state_changes: "状态变化" };
 const factTypeLabel = (type) => FACT_LABELS[type] || type;
+const PROFILE_LIMIT = 220;
 const clip = (value, limit = 140) => {
   const flat = String(value || "").replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
@@ -300,13 +332,49 @@ function factIntro(character, limit) {
     : characterFacts(character.id).map((fact) => displayValue(fact.value_json));
   return clip(source.filter(Boolean).join(" "), limit);
 }
-function characterIntro(character) {
-  const synthesis = (character?.synthesis || []).map((item) => item.text).filter(Boolean)[0];
-  return clip(synthesis || factIntro(character, 400), 140);
+function profileParagraphs(character) {
+  const texts = (character?.synthesis || []).map((item) => item.text).filter(Boolean);
+  if (!texts.length) return [];
+  const used = [texts[0]];
+  let total = texts[0].length;
+  // Keep the profile near 200 characters even when older synthesis paragraphs are short.
+  for (let index = 1; index < texts.length && total < 150; index += 1) {
+    used.push(texts[index]);
+    total += texts[index].length;
+  }
+  return used;
 }
-const detailIntro = computed(() => (detail.value ? factIntro(detail.value, 800) : ""));
-const detailSynthesis = computed(() => detail.value?.synthesis || []);
+function characterIntro(character) {
+  const paragraphs = profileParagraphs(character);
+  if (!paragraphs.length) return clip(factIntro(character, 400), PROFILE_LIMIT);
+  return clip(paragraphs.join(" "), PROFILE_LIMIT);
+}
+function characterIdentity(character) {
+  const identity = characterFacts(character.id).find((fact) => fact.fact_type === "identity");
+  return identity ? clip(displayValue(identity.value_json), 60) : "";
+}
+function relationsOf(character) {
+  return relations.value.filter((item) => item.subject_id === character.id || item.object_id === character.id);
+}
+async function regenerateProfile() {
+  if (!detail.value || synthesisBusy.value || !bookId.value) return;
+  synthesisBusy.value = true;
+  try {
+    const result = await api.post(`/books/${bookId.value}/knowledge/characters/${detail.value.id}/synthesize`);
+    detail.value.synthesis = result.synthesis || [];
+    detail.value.synthesis_status = result.synthesis_status || "ready";
+    ElMessage.success("档案描述已更新");
+  } catch (err) { report(err); } finally { synthesisBusy.value = false; }
+}
+const detailProfile = computed(() => (detail.value ? characterIntro(detail.value) : ""));
+const detailSynthesis = computed(() => (detail.value
+  ? (detail.value.synthesis || []).slice(profileParagraphs(detail.value).length)
+  : []));
 const detailFacts = computed(() => (detail.value ? characterFacts(detail.value.id) : []));
+const detailIdentity = computed(() => {
+  const identity = detailFacts.value.find((fact) => fact.fact_type === "identity");
+  return identity ? clip(displayValue(identity.value_json), 80) : "";
+});
 const detailRelations = computed(() => (detail.value
   ? filteredRelations.value.filter((item) => item.subject_id === detail.value.id || item.object_id === detail.value.id)
   : []));
@@ -453,14 +521,38 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .character-title-wrap { display:flex; align-items:center; gap:10px; min-width:0; }
 .knowledge-avatar { width:44px; height:44px; flex:0 0 44px; border-radius:12px; object-fit:cover; background:#e7f2ee; }
 .character-card { display:flex; flex-direction:column; gap:10px; }
-.character-intro { margin:0; color:#48605a; line-height:1.6; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.character-intro { margin:0; color:#48605a; line-height:1.75; display:block; overflow:visible; }
 .character-intro.placeholder { color:#93a49c; }
-.character-intro.full { -webkit-line-clamp:unset; display:block; overflow:visible; }
+.character-tags { display:flex; flex-wrap:wrap; gap:6px; }
+.character-tag { padding:2px 9px; border-radius:999px; background:#f2f8f5; border:1px solid #e2efe9; color:#4c6d61; font-size:11px; }
+.character-profile { padding-top:10px; border-top:1px dashed #e8f0ec; }
+.character-profile-label { margin:0 0 4px; font-size:11px; letter-spacing:2px; color:#8ba79c; }
 .character-actions { display:flex; justify-content:flex-end; gap:8px; }
-.drawer-meta { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding-bottom:12px; border-bottom:1px solid #edf1ee; }
+.drawer-profile { display:flex; align-items:center; gap:16px; padding:6px 0 16px; border-bottom:1px solid #edf1ee; }
+.drawer-avatar { width:76px; height:76px; flex:0 0 76px; border-radius:18px; object-fit:cover; background:#e7f2ee; border:2px solid #cfe6dc; box-shadow:0 6px 18px rgba(41,85,69,.12); }
+.drawer-profile-content { min-width:0; }
+.drawer-profile-kicker { margin:0; font-size:11px; letter-spacing:2px; color:#8ba79c; }
+.drawer-profile-name { margin:2px 0 0; font-size:22px; color:#1d4d42; overflow-wrap:anywhere; }
+.drawer-profile-alias { margin:4px 0 8px; color:#6d857b; font-size:13px; }
+.drawer-profile-meta { display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:13px; color:#4d6b60; }
+.drawer-profile-meta strong { color:#1d4d42; }
 .drawer-section { margin-top:18px; }
 .drawer-section h3 { margin:0 0 8px; font-size:15px; color:#22453c; }
-.drawer-section .character-intro { -webkit-line-clamp:unset; display:block; overflow:visible; }
+.section-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
+.section-heading h3 { margin:0; }
+.profile-description { padding:16px; border-radius:12px; background:linear-gradient(160deg,#f7fbf9,#f1f7f4); border:1px solid #e3efe9; }
+.profile-text { margin:0; color:#3f5750; line-height:1.85; font-size:14px; text-align:justify; }
+.profile-empty { margin:0; color:#8ba29a; font-size:13px; }
+.profile-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.profile-facts > div { padding:10px 12px; border:1px solid #e7efeb; border-radius:10px; background:#fbfdfc; }
+.profile-facts span { display:block; margin-bottom:3px; color:#8da59c; font-size:11px; letter-spacing:1px; }
+.profile-facts strong { display:block; color:#24463c; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.relation-chips { display:flex; flex-wrap:wrap; gap:8px; }
+.relation-chip { display:inline-flex; align-items:center; padding:5px 11px; border-radius:999px; border:1px solid transparent; font-size:12px; }
+.relation-chip-friendly { background:#eef7f0; border-color:#d6ebdc; color:#2f7a51; }
+.relation-chip-hostile { background:#fbf0ef; border-color:#f2dcd9; color:#a84c44; }
+.relation-chip-kinship { background:#fbf6ea; border-color:#efe1c6; color:#8a6a20; }
+.relation-chip-neutral { background:#f1f5f7; border-color:#e0e9ee; color:#4c6a78; }
 .synthesis-paragraph { margin:0 0 10px; color:#3f5750; line-height:1.7; }
 .drawer-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; gap:8px; padding:14px 0 4px; margin-top:18px; background:#fff; border-top:1px solid #edf1ee; }
 .character-title { min-width:0; }

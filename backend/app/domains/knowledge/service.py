@@ -53,6 +53,8 @@ class KnowledgeService:
             content = summaries.get(row["canonical_name"].casefold()) or {}
             row["synthesis"] = content.get("synthesis") or []
             row["synthesis_status"] = content.get("synthesis_status") or "pending"
+            row["first_chapter"] = content.get("first_chapter") or content.get("chapter_no")
+            row["last_chapter"] = content.get("last_chapter")
         return rows
 
     def synthesize_character(self, user_id, book_id, character_id, profile_id=None):

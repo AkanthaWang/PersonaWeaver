@@ -47,7 +47,7 @@ def test_card_intro_prefers_synthesis_then_falls_back_to_fields():
     assert card_intro({"summary": "摘要", "identity": "身份"}) == "摘要 身份"
     assert card_intro({"personality": ["谨慎"]}) == "谨慎"
     long_text = card_intro({"summary": "甲" * 400})
-    assert len(long_text) == 180 and long_text.endswith("…")
+    assert len(long_text) == 220 and long_text.endswith("…")
 
 
 def test_card_from_character_is_idempotent_and_can_be_overwritten(tmp_path):
@@ -96,4 +96,4 @@ def test_long_character_keeps_card_within_editable_limit(tmp_path):
     )["card"]
     assert len(card["content"]) <= 48000
     assert "## 章节依据" not in card["content"]
-    assert len(card["intro"]) <= 180
+    assert len(card["intro"]) <= 220
