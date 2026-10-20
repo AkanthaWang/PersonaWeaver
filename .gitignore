@@ -105,6 +105,6 @@ test-results/
 .tmp_extract_dispatch_test/
 
 # Project-specific sensitive Supabase notes must never be committed
-db/
+/db/
 .docs/
 .cache/
