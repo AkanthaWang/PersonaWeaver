@@ -19,7 +19,7 @@ from backend.app.ai.prompts.extraction import (
 KINDS = ("characters", "items", "storyline_events", "world_locations")
 # Changing this version intentionally invalidates old extraction checkpoints.
 # The next run must apply normalization and the current key-fact rules.
-VERSION = "evidence-v4-normalized-key-facts"
+VERSION = "evidence-v5-relevance-filter"
 API_ENVELOPE_KEYS = {"choices", "output", "usage", "total_tokens", "error"}
 
 
@@ -123,6 +123,55 @@ KEY_FIELDS = {
                         "related_characters"),
 }
 
+ROUTINE_CHARACTER_DETAILS = {
+    "你好", "您好", "谢谢", "多谢", "请坐", "点头", "点了点头", "摇头",
+    "转身", "起身", "坐下", "看向", "看了看", "沉默", "笑了笑",
+}
+GENERIC_ITEM_NAMES = {
+    "茶", "茶水", "茶杯", "杯子", "碗", "盘子", "筷子", "桌子", "椅子",
+    "门", "窗", "衣服", "鞋子", "纸", "纸张", "书", "普通的书",
+}
+ROUTINE_EVENT_MARKERS = (
+    "寒暄", "闲聊", "打招呼", "问候", "道谢", "请坐", "无事发生", "没有发生什么",
+)
+
+
+def _compact_text(value: str) -> str:
+    return "".join(value.strip().rstrip("。！？!?，,；;：:").split())
+
+
+def filter_low_value_details(kind: str, entry: dict) -> dict:
+    """Remove deterministic filler that models commonly emit as facts."""
+    filtered = dict(entry)
+    if kind == "characters":
+        for field in ("behavior", "speech"):
+            filtered[field] = [
+                item for item in filtered.get(field, [])
+                if _compact_text(item) not in ROUTINE_CHARACTER_DETAILS
+            ]
+    elif kind == "items":
+        if (
+            _compact_text(filtered.get("name", "")) in GENERIC_ITEM_NAMES
+            and not filtered.get("significance")
+            and not filtered.get("key_events")
+            and not filtered.get("state_changes")
+        ):
+            for field in ("summary", "description", "owner", "type", "related_characters"):
+                filtered.pop(field, None)
+    elif kind == "storyline_events":
+        text = " ".join(
+            str(filtered.get(field, ""))
+            for field in ("name", "summary", "description", "involved_characters")
+        )
+        if (
+            any(marker in text for marker in ROUTINE_EVENT_MARKERS)
+            and not filtered.get("state_changes")
+            and not filtered.get("significance")
+        ):
+            for field in KEY_FIELDS[kind]:
+                filtered.pop(field, None)
+    return filtered
+
 
 def segments(chapter: dict, limit=6000, overlap=300) -> list[dict]:
     text, start, output = chapter["content"], 0, []
@@ -164,6 +213,7 @@ def validate_extraction(value, inputs: list[dict]) -> dict:
                     entry[key] = cleaned
             if not entry["name"]:
                 raise ValueError("资料名称不能为空")
+            entry = filter_low_value_details(kind, entry)
             citations = []
             for evidence in entry.pop("evidence"):
                 source = by_id.get(evidence["segment_id"])

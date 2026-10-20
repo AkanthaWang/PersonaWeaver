@@ -233,6 +233,8 @@ nav a.nav-link { min-height: 44px; font-size: 14px; }
 .card-drawer-body { max-height: 52vh; padding: 14px 16px; overflow-y: auto; border: 1px solid #e8ebe6; border-radius: 9px; background: #fbfcfa; }
 .card-drawer-body .document-text { font-size: 13px; line-height: 1.85; color: #4d5f56; }
 .card-drawer-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+.card-mark-image { object-fit: cover; overflow: hidden; }
+.message-avatar .message-character-avatar { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 
 @media (max-width: 700px) {
   .app-shell-chat { height: auto; min-height: 100vh; overflow: visible; }

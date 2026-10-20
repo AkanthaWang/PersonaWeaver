@@ -34,6 +34,62 @@ def test_blank_fields_do_not_bypass_key_fact_filter():
     assert validate_extraction(value, [part])["characters"] == []
 
 
+def test_routine_character_details_are_removed_but_significant_details_survive():
+    value, part = extract_character(
+        behavior=["点头", "把证据藏进袖中"],
+        speech=["你好。", "我不会再相信你。"],
+    )
+    result = validate_extraction(value, [part])["characters"][0]
+    assert result["behavior"] == ["把证据藏进袖中"]
+    assert result["speech"] == ["我不会再相信你。"]
+
+
+def test_routine_events_and_generic_items_are_removed():
+    chapter = {
+        "id": "c",
+        "book_id": "b",
+        "chapter_no": 1,
+        "title": "起点",
+        "content": "林川向掌柜打招呼，随后坐下喝茶。",
+    }
+    part = segments(chapter)[0]
+    value = {kind: [] for kind in KINDS}
+    value["items"] = [{
+        "name": "茶杯",
+        "description": "桌上的茶杯",
+        "evidence": [{"segment_id": part["segment_id"], "quote": part["text"]}],
+    }]
+    value["storyline_events"] = [{
+        "name": "打招呼",
+        "description": "林川向掌柜打招呼",
+        "involved_characters": ["林川", "掌柜"],
+        "evidence": [{"segment_id": part["segment_id"], "quote": part["text"]}],
+    }]
+    result = validate_extraction(value, [part])
+    assert result["items"] == []
+    assert result["storyline_events"] == []
+
+
+def test_generic_item_with_plot_significance_survives():
+    chapter = {
+        "id": "c",
+        "book_id": "b",
+        "chapter_no": 1,
+        "title": "起点",
+        "content": "林川把茶杯藏进袖中。",
+    }
+    part = segments(chapter)[0]
+    value = {kind: [] for kind in KINDS}
+    value["items"] = [{
+        "name": "茶杯",
+        "description": "桌上的茶杯",
+        "significance": "藏有暗号",
+        "evidence": [{"segment_id": part["segment_id"], "quote": part["text"]}],
+    }]
+    result = validate_extraction(value, [part])
+    assert result["items"][0]["significance"] == "藏有暗号"
+
+
 def test_even_filtered_entries_must_have_valid_citations():
     value, part = extract_character()
     value["characters"][0]["evidence"][0]["quote"] = "没有发生的事"

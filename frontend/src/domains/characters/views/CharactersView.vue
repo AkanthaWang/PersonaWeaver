@@ -7,7 +7,7 @@
     <el-empty v-if="!visible.length && !loading" description="暂无角色卡" />
     <div class="asset-grid">
       <article v-for="card in visible" :key="card.id" class="asset-item">
-        <h3>{{ card.name }}</h3><p class="excerpt">{{ card.intro || card.content.replace(/[#*]/g, '').slice(0, 100) }}</p><p class="muted">{{ dateText(card.updated_at) }}</p>
+        <div class="asset-item-heading"><img class="role-card-avatar" :src="characterAvatarUrl(card.name)" :alt="`${card.name}头像`" /><h3>{{ card.name }}</h3></div><p class="excerpt">{{ card.intro || card.content.replace(/[#*]/g, '').slice(0, 100) }}</p><p class="muted">{{ dateText(card.updated_at) }}</p>
         <div class="icon-actions">
           <el-tooltip content="编辑角色卡"><el-button :icon="Edit" circle aria-label="编辑角色卡" @click="openEditor(card)" /></el-tooltip>
           <el-tooltip content="查看角色卡"><el-button :icon="View" circle aria-label="查看角色卡" @click="preview = card" /></el-tooltip>
@@ -50,6 +50,7 @@ import BookPicker from "../../../components/BookPicker.vue";
 import { api, download } from "../../../api/client";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import { report, confirmDelete, dateText } from "../../../lib/ui";
+import { characterAvatarUrl } from "../../../lib/avatar";
 const workspace = useWorkspaceStore(), router = useRouter();
 const cards = ref([]), loading = ref(false), query = ref(""), editing = ref(false), saving = ref(false), preview = ref(null);
 const form = reactive({ id: "", name: "", intro: "", content: "", book_id: "" });

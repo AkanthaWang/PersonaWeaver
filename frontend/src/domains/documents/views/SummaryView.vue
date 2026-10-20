@@ -32,7 +32,7 @@
     <el-empty v-if="!filteredCharacters.length" description="暂无人物资料" />
     <article v-for="character in filteredCharacters" :key="character.id" class="knowledge-card character-card">
       <div class="character-collapsed-row">
-        <div class="character-title"><h2>{{ character.canonical_name }}</h2><p class="muted">{{ aliases(character.aliases_json) || '暂无别名' }}</p></div>
+        <div class="character-title-wrap"><img class="knowledge-avatar" :src="characterAvatarUrl(character.canonical_name)" :alt="`${character.canonical_name}头像`" /><div class="character-title"><h2>{{ character.canonical_name }}</h2><p class="muted">{{ aliases(character.aliases_json) || '暂无别名' }}</p></div></div>
         <div class="character-meta"><span class="frequency">出现 {{ character.frequency || 0 }} 次</span><el-tag size="small" :type="character.state === 'active' ? 'success' : 'info'">{{ character.state }}</el-tag></div>
       </div>
       <p class="character-intro" :class="{ placeholder: !characterIntro(character) }">{{ characterIntro(character) || '暂无介绍，提取到事实后可自动生成。' }}</p>
@@ -191,6 +191,7 @@ import ChapterReader from "../components/ChapterReader.vue";
 import { api } from "../../../api/client.js";
 import { useWorkspaceStore } from "../../../stores/workspace.js";
 import { report } from "../../../lib/ui.js";
+import { characterAvatarUrl } from "../../../lib/avatar.js";
 
 const workspace = useWorkspaceStore();
 const router = useRouter();
@@ -397,6 +398,8 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .knowledge-card { padding:18px; border:1px solid #dfe8e2; border-radius:12px; background:#fff; margin:12px 0; }
 .card-heading,.card-actions,.relation-record,.review-row,.character-collapsed-row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .character-collapsed-row { cursor: default; min-height:54px; }
+.character-title-wrap { display:flex; align-items:center; gap:10px; min-width:0; }
+.knowledge-avatar { width:44px; height:44px; flex:0 0 44px; border-radius:12px; object-fit:cover; background:#e7f2ee; }
 .character-card { display:flex; flex-direction:column; gap:10px; }
 .character-intro { margin:0; color:#48605a; line-height:1.6; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .character-intro.placeholder { color:#93a49c; }
@@ -408,7 +411,8 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .drawer-section .character-intro { -webkit-line-clamp:unset; display:block; overflow:visible; }
 .synthesis-paragraph { margin:0 0 10px; color:#3f5750; line-height:1.7; }
 .drawer-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; gap:8px; padding:14px 0 4px; margin-top:18px; background:#fff; border-top:1px solid #edf1ee; }
-.character-title h2 { margin:0; font-size:18px; }
+.character-title { min-width:0; }
+.character-title h2 { margin:0; overflow-wrap:anywhere; font-size:18px; }
 .character-title p { margin:4px 0 0; }
 .character-meta { display:flex; align-items:center; gap:10px; white-space:nowrap; }
 .frequency { color:#477568; font-size:13px; }

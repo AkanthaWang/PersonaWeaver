@@ -12,7 +12,7 @@
       <div class="chat-heading pi-chat-heading">
         <div class="chat-heading-copy">
           <div class="chat-title-line">
-            <span v-if="selectedCard" class="card-mark" aria-hidden="true">{{ cardInitial }}</span>
+            <img v-if="selectedCard" class="card-mark card-mark-image" :src="characterAvatarUrl(selectedCard.name)" :alt="`${selectedCard.name}头像`" />
             <h2>{{ selected?.title || '选择一个会话' }}</h2>
             <el-tag v-if="selected?.card_id" size="small" effect="plain" type="warning">{{ selectedCard?.name || '角色卡' }}</el-tag>
           </div>
@@ -26,12 +26,12 @@
       <section ref="timeline" class="messages pi-messages timeline">
         <div v-if="!selected" class="chat-empty"><div class="chat-empty-mark"><ChatDotRound /></div><h3>开始一段角色对话</h3><p>选择左侧会话，或创建一个新的角色场景。</p><el-button type="primary" :icon="Plus" @click="showCreate = true">创建会话</el-button></div>
         <template v-else>
-          <div v-if="selectedCard && !messages.length && !sending" class="card-intro"><span class="card-mark" aria-hidden="true">{{ cardInitial }}</span><div><strong>{{ selectedCard.name }}</strong><p>{{ selectedCard.intro || '还没有设定简介，点击「角色设定」查看或补充。' }}</p><small>在下方写下第一句话，开始这段对话。</small></div></div>
+          <div v-if="selectedCard && !messages.length && !sending" class="card-intro"><img class="card-mark card-mark-image" :src="characterAvatarUrl(selectedCard.name)" :alt="`${selectedCard.name}头像`" /><div><strong>{{ selectedCard.name }}</strong><p>{{ selectedCard.intro || '还没有设定简介，点击「角色设定」查看或补充。' }}</p><small>在下方写下第一句话，开始这段对话。</small></div></div>
           <el-empty v-else-if="!messages.length && !sending && !timelineEntries.length" description="等待模型回复" :image-size="70" />
           <template v-for="entry in timelineEntries" :key="entry.key">
             <div v-if="entry.kind === 'marker'" class="context-marker" :class="entry.type"><el-icon><Collection /></el-icon><span>{{ entry.type === 'compaction' ? '上下文已压缩' : '分支摘要' }}</span><em v-if="entry.tokens_before">压缩前 {{ entry.tokens_before.toLocaleString() }} tokens</em><small v-if="entry.label">{{ entry.label }}</small><p v-if="entry.summary">{{ entry.summary }}</p></div>
             <article v-else class="message" :class="[entry.message.role, { active: entry.message.id === activeNodeId, pending: entry.pending }]">
-              <div class="message-avatar"><img v-if="entry.message.role === 'user' && auth.user?.avatar" :src="auth.user.avatar" alt="个人头像" /><el-icon v-else-if="entry.message.role === 'user'"><User /></el-icon><span v-else-if="selectedCard && cardInitial" class="avatar-initial">{{ cardInitial }}</span><el-icon v-else><ChatDotRound /></el-icon></div>
+              <div class="message-avatar"><img v-if="entry.message.role === 'user' && auth.user?.avatar" :src="auth.user.avatar" alt="个人头像" /><el-icon v-else-if="entry.message.role === 'user'"><User /></el-icon><img v-else-if="selectedCard" class="message-character-avatar" :src="characterAvatarUrl(selectedCard.name)" :alt="`${selectedCard.name}头像`" /><el-icon v-else><ChatDotRound /></el-icon></div>
               <div class="message-content">
                 <div class="message-meta"><small>{{ entry.message.role === 'user' ? (auth.user?.username || '我') : (selectedCard?.name || '角色助手') }}</small><el-tag v-if="entry.message.label" size="small" effect="plain" type="success">{{ entry.message.label }}</el-tag><time v-if="entry.message.created_at">{{ formatTime(entry.message.created_at) }}</time></div>
                 <div class="message-markdown">
@@ -70,6 +70,7 @@ import "markstream-vue/index.css";
 import { api } from "../../../api/client";
 import { useAuthStore } from "../../../stores/auth";
 import { report, confirmDelete } from "../../../lib/ui";
+import { characterAvatarUrl } from "../../../lib/avatar";
 const auth = useAuthStore(), route = useRoute(), router = useRouter();
 const conversations = ref([]), cards = ref([]), profiles = ref([]), model = ref(null), selected = ref(null), messages = ref([]), tree = ref([]), draft = ref(""), error = ref("");
 const conversationFilter = ref(""), selectedProfileId = ref(""), newProfile = ref(""), newTitle = ref(""), newCard = ref("");
@@ -77,7 +78,6 @@ const loading = ref(false), sending = ref(false), creating = ref(false), profile
 const activeNodeId = computed(() => selected.value?.active_leaf_id || null), activePath = computed(() => new Set(messages.value.map((message) => message.id).filter(Boolean))), activeChildCount = computed(() => activeNodeId.value ? tree.value.filter((node) => node.parent_id === activeNodeId.value).length : 0);
 const filteredConversations = computed(() => { const query = conversationFilter.value.trim().toLowerCase(); return query ? conversations.value.filter((item) => item.title.toLowerCase().includes(query)) : conversations.value; });
 const selectedCard = computed(() => cards.value.find((card) => card.id === selected.value?.card_id));
-const cardInitial = computed(() => (selectedCard.value?.name || "").trim().slice(0, 1));
 const composerPlaceholder = computed(() => !selected.value ? "先选择一个会话…" : selectedCard.value ? `以「${selectedCard.value.name}」的身份开始对话…` : "写下你的下一句话…");
 const canSend = computed(() => Boolean(selected.value && draft.value.trim() && !sending.value && !profilesLoading.value));
 const draftPercent = computed(() => Math.round((draft.value.length / 12000) * 100));
