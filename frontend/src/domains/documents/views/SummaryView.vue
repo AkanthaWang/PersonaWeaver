@@ -103,10 +103,10 @@
       <article v-for="relation in filteredRelations" :key="relation.id" class="relation-record">
         <div>
           <strong>{{ characterName(relation.subject_id) }}</strong>
-          <el-tag size="small" effect="plain" class="relation-type">{{ relation.relation_type || '相关' }}</el-tag>
+          <el-tag size="small" effect="plain" class="relation-type">{{ relationLabel(relation.relation_type) }}</el-tag>
           <strong>{{ characterName(relation.object_id) }}</strong>
         </div>
-        <div><el-button v-if="relation.evidence_id" link type="primary" @click="openCitation(relation)">原文</el-button><el-button link type="danger" @click="removeRelation(relation)">删除</el-button></div>
+        <el-button link type="danger" @click="removeRelation(relation)">删除</el-button>
       </article>
     </div>
   </section>
@@ -169,10 +169,9 @@
         <article v-for="relation in detailRelations" :key="relation.id" class="relation-record">
           <div>
             <strong>{{ relation.subject_id === detail.id ? detail.canonical_name : characterName(relation.subject_id) }}</strong>
-            <el-tag size="small" effect="plain" class="relation-type">{{ relation.relation_type || '相关' }}</el-tag>
+            <el-tag size="small" effect="plain" class="relation-type">{{ relationLabel(relation.relation_type) }}</el-tag>
             <strong>{{ relation.object_id === detail.id ? detail.canonical_name : characterName(relation.object_id) }}</strong>
           </div>
-          <el-button v-if="relation.chapter_id || relation.evidence_id" link type="primary" @click="openCitation(relation)">原文</el-button>
         </article>
       </section>
       <div class="drawer-actions">
@@ -213,8 +212,27 @@ const RELATION_STYLES = {
   kinship: { label: "亲属 / 师徒", color: "#b28a42" },
   neutral: { label: "其他关系", color: "#718b9d" },
 };
+const RELATION_LABEL_RULES = [
+  { label: "亲属", pattern: /父亲|母亲|父母|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|夫妻|丈夫|妻子|亲属|家人|血缘/ },
+  { label: "师徒", pattern: /师徒|师父|师傅|弟子|门生/ },
+  { label: "上下级", pattern: /上下级|上司|下属|部下|主从|臣属|隶属/ },
+  { label: "敌对", pattern: /敌对|敌人|仇敌|冲突|对立|仇恨|战斗|追杀|追捕/ },
+  { label: "背叛", pattern: /背叛|欺骗|出卖/ },
+  { label: "合作", pattern: /同盟|盟友|合作|协作/ },
+  { label: "同伴", pattern: /朋友|好友|同伴|伙伴|同行者/ },
+  { label: "情感", pattern: /喜欢|爱慕|爱恋|恋人|暧昧/ },
+  { label: "保护", pattern: /保护|救助|帮助|照顾/ },
+];
 const characterName = (id) => characters.value.find((item) => item.id === id)?.canonical_name || id;
 const characterNameCount = computed(() => filteredCharacters.value.length);
+const relationLabel = (type) => {
+  const raw = String(type || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "相关";
+  const matched = RELATION_LABEL_RULES.find((rule) => rule.pattern.test(raw));
+  if (matched) return matched.label;
+  if (raw.length <= 8 && !/[，。；：、,.!?！？]/.test(raw)) return raw;
+  return "相关";
+};
 const relationCategory = (type) => {
   const value = String(type || "");
   if (/朋友|同伴|同盟|合作|友好|盟友|救助|保护|喜欢|爱慕/.test(value)) return "friendly";
@@ -234,7 +252,7 @@ const matches = (value) => !query.value.trim() || text(value).includes(text(quer
 const filteredCharacters = computed(() => characters.value.filter((item) => matches(`${item.canonical_name} ${aliases(item.aliases_json)}`)));
 const filteredEvents = computed(() => events.value.filter((item) => matches(`${item.title} ${item.description}`)));
 const filteredRelations = computed(() => relations.value.filter((item) =>
-  matches(`${characterName(item.subject_id)} ${item.relation_type} ${characterName(item.object_id)}`)));
+  matches(`${characterName(item.subject_id)} ${item.relation_type} ${relationLabel(item.relation_type)} ${characterName(item.object_id)}`)));
 const filteredClues = computed(() => clues.value.filter((item) => matches(`${item.title} ${item.original_text} ${item.possible_meaning}`)));
 const chapterTitles = computed(() => Object.fromEntries(chapters.value.map((item) => [item.chapter_no, item.title])));
 const timelineGroups = computed(() => {
@@ -346,7 +364,7 @@ async function renderRelationGraph() {
     target: item.object_id,
     states: [],
     style: {
-      labelText: item.relation_type || "",
+      labelText: relationLabel(item.relation_type),
       stroke: relationColor(item.relation_type),
       lineWidth: 1.6,
       lineDash: relationCategory(item.relation_type) === "hostile" ? [7, 4] : undefined,
