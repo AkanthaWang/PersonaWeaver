@@ -89,9 +89,13 @@
     </div>
 
     <div v-show="relationView === 'graph'" class="relation-graph-wrap">
-      <el-empty v-if="!filteredRelations.length" description="暂无可展示的人物关系" />
-      <div v-show="filteredRelations.length" ref="graphEl" class="relation-graph"></div>
-      <p v-if="filteredRelations.length" class="graph-hint muted">拖拽节点可调整位置，滚轮缩放画布，拖拽空白处平移。</p>
+      <el-empty v-if="!filteredCharacters.length" description="暂无人物资料" />
+      <div v-show="filteredCharacters.length" ref="graphEl" class="relation-graph">
+        <div v-if="filteredRelations.length" class="relation-graph-legend">
+          <span v-for="item in relationLegend" :key="item.key"><i :style="{ backgroundColor: item.color }" />{{ item.label }}</span>
+        </div>
+      </div>
+      <p v-if="filteredCharacters.length" class="graph-hint muted">圆形头像为人物；无关系人物会单独陈列。拖拽节点可调整位置，滚轮缩放画布，拖拽空白处平移。</p>
     </div>
 
     <div v-show="relationView === 'list'">
@@ -203,15 +207,34 @@ const detail = ref(null), detailOpen = ref(false);
 const chapters = ref([]), collapsedChapters = reactive(new Set());
 const relationView = ref("graph"), graphEl = ref(null);
 let relationGraph = null;
-const GRAPH_COLORS = ["#2f6f5e", "#3c7a9c", "#8a6bb1", "#b1734a", "#9c5a75", "#5c7d3e", "#a3893a", "#4f6e91"];
+const RELATION_STYLES = {
+  friendly: { label: "友好 / 合作", color: "#4d9b73" },
+  hostile: { label: "敌对 / 冲突", color: "#c96b61" },
+  kinship: { label: "亲属 / 师徒", color: "#b28a42" },
+  neutral: { label: "其他关系", color: "#718b9d" },
+};
 const characterName = (id) => characters.value.find((item) => item.id === id)?.canonical_name || id;
-const characterNameCount = computed(() => new Set(filteredRelations.value.flatMap((item) => [item.subject_id, item.object_id])).size);
-const relationColor = (type) => GRAPH_COLORS[[...String(type || "")].reduce((sum, char) => sum + char.codePointAt(0), 0) % GRAPH_COLORS.length];
+const characterNameCount = computed(() => filteredCharacters.value.length);
+const relationCategory = (type) => {
+  const value = String(type || "");
+  if (/朋友|同伴|同盟|合作|友好|盟友|救助|保护|喜欢|爱慕/.test(value)) return "friendly";
+  if (/敌|仇|冲突|对立|背叛|欺骗|追捕|杀|战/.test(value)) return "hostile";
+  if (/父|母|兄|弟|姐|妹|亲属|夫妻|师|徒|家人/.test(value)) return "kinship";
+  return "neutral";
+};
+const relationColor = (type) => RELATION_STYLES[relationCategory(type)].color;
+const relationLegend = computed(() => {
+  const used = new Set(filteredRelations.value.map((item) => relationCategory(item.relation_type)));
+  return Object.entries(RELATION_STYLES)
+    .filter(([key]) => used.has(key))
+    .map(([key, value]) => ({ key, ...value }));
+});
 const text = (value) => String(value || "").toLocaleLowerCase();
 const matches = (value) => !query.value.trim() || text(value).includes(text(query.value.trim()));
 const filteredCharacters = computed(() => characters.value.filter((item) => matches(`${item.canonical_name} ${aliases(item.aliases_json)}`)));
 const filteredEvents = computed(() => events.value.filter((item) => matches(`${item.title} ${item.description}`)));
-const filteredRelations = computed(() => relations.value.filter((item) => matches(`${item.subject_id} ${item.relation_type} ${item.object_id}`)));
+const filteredRelations = computed(() => relations.value.filter((item) =>
+  matches(`${characterName(item.subject_id)} ${item.relation_type} ${characterName(item.object_id)}`)));
 const filteredClues = computed(() => clues.value.filter((item) => matches(`${item.title} ${item.original_text} ${item.possible_meaning}`)));
 const chapterTitles = computed(() => Object.fromEntries(chapters.value.map((item) => [item.chapter_no, item.title])));
 const timelineGroups = computed(() => {
@@ -298,13 +321,11 @@ async function renderRelationGraph() {
   if (!container) return;
   relationGraph?.destroy();
   relationGraph = null;
-  if (!filteredRelations.value.length) return;
-
   const visibleIds = new Set(filteredRelations.value.flatMap((item) => [item.subject_id, item.object_id]));
-  const nodes = characters.value.filter((item) => visibleIds.has(item.id)).map((item) => ({
+  const nodes = filteredCharacters.value.map((item) => ({
     id: item.id,
     style: {
-      img: characterAvatarUrl(item.canonical_name),
+      src: characterAvatarUrl(item.canonical_name),
       labelText: item.canonical_name,
       size: Math.min(72, 48 + Math.sqrt(item.frequency || 0) * 4),
       radius: 999,
@@ -313,21 +334,26 @@ async function renderRelationGraph() {
       halo: true,
       haloStroke: "#8db8a8",
       haloLineWidth: 2,
+      haloLineDash: [2, 3],
       labelPlacement: "bottom",
       labelFill: "#1d3b33",
       labelFontSize: 12,
       labelFontWeight: 650,
       cursor: "pointer",
     },
+    states: visibleIds.has(item.id) ? [] : ["isolated"],
   }));
-  const edges = filteredRelations.value.map((item) => ({
+  const nodeIds = new Set(nodes.map((item) => item.id));
+  const edges = filteredRelations.value.filter((item) => nodeIds.has(item.subject_id) && nodeIds.has(item.object_id)).map((item) => ({
     id: item.id,
     source: item.subject_id,
     target: item.object_id,
+    states: [],
     style: {
       labelText: item.relation_type || "",
       stroke: relationColor(item.relation_type),
       lineWidth: 1.6,
+      lineDash: relationCategory(item.relation_type) === "hostile" ? [7, 4] : undefined,
       endArrow: true,
       endArrowSize: 8,
       labelFontSize: 10,
@@ -349,6 +375,11 @@ async function renderRelationGraph() {
   });
   await relationGraph.render();
   relationGraph.fitView();
+  relationGraph.on("node:click", (event) => {
+    const id = event.target?.id || event.item?.id;
+    const row = characters.value.find((item) => item.id === id);
+    if (row) openDetail(row);
+  });
 }
 function displayValue(value) { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed.join("、") : typeof parsed === "object" ? JSON.stringify(parsed) : parsed; } catch { return value; } }
 function reviewText(value) { try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; } }
@@ -364,6 +395,8 @@ async function load() {
     characters.value = characterRows; events.value = eventRows; relations.value = relationRows; clues.value = clueRows; reviews.value = reviewRows;
     chapters.value = chapterRows.chapters || [];
     cards.value = (await api.get("/cards", { params: { book_id: bookId.value } })).cards || [];
+    await nextTick();
+    await renderRelationGraph();
     const factRows = await Promise.all(characterRows.map(async (character) => {
       factsLoading[character.id] = true;
       try { return await api.get(`/books/${bookId.value}/knowledge/characters/${character.id}/facts`); }
@@ -390,7 +423,7 @@ async function resolveReview(row, action) { try { await api.post(`/books/${bookI
 function exportData() { const data = JSON.stringify({ characters: characters.value, facts: facts.value, events: events.value, relations: relations.value, clues: clues.value }, null, 2); const blob = new Blob([data], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "knowledge.json"; link.click(); URL.revokeObjectURL(link.href); }
 watch(() => workspace.selectedId, (value) => { bookId.value = value || ""; detailOpen.value = false; detail.value = null; load(); }, { immediate: true });
 watch([tab, relationView], () => renderRelationGraph());
-watch(filteredRelations, () => renderRelationGraph());
+watch([filteredCharacters, filteredRelations], () => renderRelationGraph());
 onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 </script>
 
@@ -452,7 +485,10 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .relation-panel { padding:18px; }
 .relation-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .relation-type { margin:0 10px; }
-.relation-graph { width:100%; height:560px; border-radius:10px; background:#f7fbf9; border:1px solid #e6efea; }
+.relation-graph { position:relative; width:100%; height:560px; overflow:hidden; border-radius:10px; background:radial-gradient(circle at 50% 42%,#ffffff 0%,#f7fbf9 68%,#eef5f1 100%); border:1px solid #e6efea; }
+.relation-graph-legend { position:absolute; top:12px; right:12px; z-index:2; display:flex; gap:10px; flex-wrap:wrap; max-width:300px; padding:8px 10px; border:1px solid #e0ebe5; border-radius:8px; background:rgba(255,255,255,.9); color:#60766b; font-size:11px; box-shadow:0 5px 16px rgba(39,48,42,.06); }
+.relation-graph-legend span { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+.relation-graph-legend i { width:16px; height:3px; border-radius:3px; }
 .graph-hint { margin:8px 0 0; font-size:12px; }
 .relation-graph-wrap { margin-top:8px; }
 .quote-text { padding:12px; background:#f6faf7; border-left:3px solid #82ad9d; color:#4d6258; }
