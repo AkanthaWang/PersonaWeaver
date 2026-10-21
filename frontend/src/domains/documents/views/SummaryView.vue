@@ -38,7 +38,7 @@
       <div class="character-tags">
         <span v-if="characterIdentity(character)" class="character-tag">身份 · {{ characterIdentity(character) }}</span>
         <span v-if="character.first_chapter" class="character-tag">第 {{ character.first_chapter }} 章登场</span>
-        <span class="character-tag">{{ relationsOf(character).length }} 条关系</span>
+        <span class="character-tag">{{ relationsOf(character).length }} 位关联人物</span>
       </div>
       <section class="character-profile">
         <p class="character-profile-label">档案描述</p>
@@ -93,7 +93,7 @@
         <el-radio-button value="graph">关系图谱</el-radio-button>
         <el-radio-button value="list">关系列表</el-radio-button>
       </el-radio-group>
-      <span class="muted">{{ filteredRelations.length }} 条关系 · {{ characterNameCount }} 位人物</span>
+      <span class="muted">{{ groupedRelations.length }} 组关系 · {{ characterNameCount }} 位人物</span>
     </div>
 
     <div v-show="relationView === 'graph'" class="relation-graph-wrap">
@@ -108,13 +108,14 @@
 
     <div v-show="relationView === 'list'">
       <el-empty v-if="!filteredRelations.length" description="暂无人物关系" />
-      <article v-for="relation in filteredRelations" :key="relation.id" class="relation-record">
-        <div>
+      <article v-for="relation in groupedRelations" :key="relation.id" class="relation-record">
+        <div class="relation-pair">
           <strong>{{ characterName(relation.subject_id) }}</strong>
-          <el-tag size="small" effect="plain" class="relation-type">{{ relationLabel(relation.relation_type) }}</el-tag>
+          <span class="muted">与</span>
           <strong>{{ characterName(relation.object_id) }}</strong>
+          <span class="relation-labels" :title="relationDirections(relation)">{{ relation.labels.join('、') }}</span>
         </div>
-        <el-button link type="danger" @click="removeRelation(relation)">删除</el-button>
+        <el-button link type="danger" @click="removeRelationGroup(relation)">删除</el-button>
       </article>
     </div>
   </section>
@@ -171,40 +172,51 @@
         <div><span>登场章节</span><strong>{{ detail.first_chapter ? `第 ${detail.first_chapter} 章` : '暂无记录' }}</strong></div>
         <div><span>活跃至</span><strong>{{ detail.last_chapter ? `第 ${detail.last_chapter} 章` : '暂无记录' }}</strong></div>
         <div><span>出现次数</span><strong>{{ detail.frequency || 0 }} 次</strong></div>
-        <div><span>人物关系</span><strong>{{ detailRelations.length }} 条</strong></div>
+        <div><span>关联人物</span><strong>{{ detailRelations.length }} 位</strong></div>
         <div><span>状态</span><strong>{{ detail.state || '暂无记录' }}</strong></div>
       </section>
-      <section v-if="detailSynthesis.length" class="drawer-section">
-        <h3>补充档案</h3>
-        <p v-for="(paragraph, index) in detailSynthesis" :key="index" class="synthesis-paragraph">{{ paragraph.text }}</p>
-      </section>
       <section class="drawer-section">
-        <h3>事实依据</h3>
-        <el-empty v-if="!detailFacts.length" :image-size="50" description="暂无事实" />
-        <div v-for="fact in detailFacts" :key="fact.id" class="fact-row">
-          <div><strong>{{ factTypeLabel(fact.fact_type) }}</strong><p>{{ displayValue(fact.value_json) }}</p></div>
-          <div class="fact-actions">
-            <el-tag size="small" effect="plain">v{{ fact.version }}</el-tag>
-            <el-button v-if="fact.quote" link type="primary" @click="openCitation(fact)">原文</el-button>
-            <el-button link type="danger" @click="removeFact(fact)">删除</el-button>
-          </div>
-        </div>
+        <div class="section-heading"><h3>人物大事</h3><span class="muted">{{ detailMilestones.length }} 项</span></div>
+        <el-empty v-if="!detailMilestones.length" :image-size="50" description="暂无重要经历" />
+        <ol v-else class="milestone-list">
+          <li v-for="milestone in visibleMilestones" :key="milestone.id">
+            <p>{{ clip(milestone.text, 90) }}</p>
+            <div class="milestone-chapters">
+              <template v-for="(chapter, index) in milestone.chapters" :key="chapter.chapter_id || index">
+                <el-button v-if="chapter.chapter_id" link type="primary" :title="chapter.chapter_title || ''" @click="openMilestoneChapter(chapter)">
+                  {{ chapter.chapter_no != null ? `第 ${chapter.chapter_no} 章` : chapter.chapter_title || '相关章节' }}
+                </el-button>
+                <span v-else>{{ chapter.chapter_no != null ? `第 ${chapter.chapter_no} 章` : chapter.chapter_title }}</span>
+              </template>
+              <span v-if="!milestone.chapters.length">章节未标注</span>
+            </div>
+          </li>
+        </ol>
+        <el-button v-if="detailMilestones.length > 6" link type="primary" @click="milestonesExpanded = !milestonesExpanded">
+          {{ milestonesExpanded ? '收起' : `展开其余 ${detailMilestones.length - 6} 项` }}
+        </el-button>
       </section>
       <section v-if="detailRelations.length" class="drawer-section">
         <h3>人物关系</h3>
-        <div class="relation-chips">
-          <span
+        <div class="detail-relation-list">
+          <button
             v-for="relation in detailRelations"
             :key="relation.id"
-            class="relation-chip"
-            :class="`relation-chip-${relationCategory(relation.relation_type)}`"
+            type="button"
+            class="detail-relation"
+            :title="relationDirections(relation)"
+            @click="openRelatedCharacter(relation)"
           >
-            {{ relation.subject_id === detail.id ? characterName(relation.object_id) : characterName(relation.subject_id) }}
-            · {{ relationLabel(relation.relation_type) }}
-          </span>
+            <img :src="characterAvatarUrl(characterName(relatedId(relation)))" alt="" />
+            <strong>{{ characterName(relatedId(relation)) }}</strong>
+            <span class="relation-labels">{{ relation.labels.join('、') }}</span>
+            <el-icon><ArrowRight /></el-icon>
+          </button>
         </div>
       </section>
-      <div class="drawer-actions">
+    </template>
+    <template #footer>
+      <div v-if="detail" class="drawer-actions">
         <el-button v-if="cardFor(detail.canonical_name)" type="success" @click="goCards">前往角色卡</el-button>
         <el-button v-else type="primary" :loading="cardBusy === detail.id" @click="createCard(detail)">生成角色卡</el-button>
         <el-button type="danger" plain @click="removeDetailCharacter">移除人物</el-button>
@@ -216,7 +228,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { Download, Refresh, Search } from "@element-plus/icons-vue";
+import { ArrowRight, Download, Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Graph } from "@antv/g6";
 import BookPicker from "../../../components/BookPicker.vue";
@@ -225,6 +237,7 @@ import { api } from "../../../api/client.js";
 import { useWorkspaceStore } from "../../../stores/workspace.js";
 import { report } from "../../../lib/ui.js";
 import { characterAvatarUrl } from "../../../lib/avatar.js";
+import { characterMilestones, groupRelations, relationLabel } from "../characterPresentation.js";
 
 const workspace = useWorkspaceStore();
 const router = useRouter();
@@ -234,6 +247,7 @@ const cards = ref([]), cardBusy = ref("");
 const factsLoading = reactive({}), showReader = ref(false), citation = ref(null);
 const detail = ref(null), detailOpen = ref(false);
 const synthesisBusy = ref(false);
+const milestonesExpanded = ref(false);
 const chapters = ref([]), collapsedChapters = reactive(new Set());
 const relationView = ref("graph"), graphEl = ref(null);
 let relationGraph = null;
@@ -243,27 +257,8 @@ const RELATION_STYLES = {
   kinship: { label: "亲属 / 师徒", color: "#b28a42" },
   neutral: { label: "其他关系", color: "#718b9d" },
 };
-const RELATION_LABEL_RULES = [
-  { label: "亲属", pattern: /父亲|母亲|父母|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|夫妻|丈夫|妻子|亲属|家人|血缘/ },
-  { label: "师徒", pattern: /师徒|师父|师傅|弟子|门生/ },
-  { label: "上下级", pattern: /上下级|上司|下属|部下|主从|臣属|隶属/ },
-  { label: "敌对", pattern: /敌对|敌人|仇敌|冲突|对立|仇恨|战斗|追杀|追捕/ },
-  { label: "背叛", pattern: /背叛|欺骗|出卖/ },
-  { label: "合作", pattern: /同盟|盟友|合作|协作/ },
-  { label: "同伴", pattern: /朋友|好友|同伴|伙伴|同行者/ },
-  { label: "情感", pattern: /喜欢|爱慕|爱恋|恋人|暧昧/ },
-  { label: "保护", pattern: /保护|救助|帮助|照顾/ },
-];
 const characterName = (id) => characters.value.find((item) => item.id === id)?.canonical_name || id;
 const characterNameCount = computed(() => filteredCharacters.value.length);
-const relationLabel = (type) => {
-  const raw = String(type || "").replace(/\s+/g, " ").trim();
-  if (!raw) return "相关";
-  const matched = RELATION_LABEL_RULES.find((rule) => rule.pattern.test(raw));
-  if (matched) return matched.label;
-  if (raw.length <= 8 && !/[，。；：、,.!?！？]/.test(raw)) return raw;
-  return "相关";
-};
 const relationCategory = (type) => {
   const value = String(type || "");
   if (/朋友|同伴|同盟|合作|友好|盟友|救助|保护|喜欢|爱慕/.test(value)) return "friendly";
@@ -280,10 +275,19 @@ const relationLegend = computed(() => {
 });
 const text = (value) => String(value || "").toLocaleLowerCase();
 const matches = (value) => !query.value.trim() || text(value).includes(text(query.value.trim()));
-const filteredCharacters = computed(() => characters.value.filter((item) => matches(`${item.canonical_name} ${aliases(item.aliases_json)}`)));
+const filteredCharacters = computed(() => {
+  const related = new Set(groupedRelations.value.flatMap((item) => [item.subject_id, item.object_id]));
+  return characters.value.filter((item) =>
+    matches(`${item.canonical_name} ${aliases(item.aliases_json)}`) || related.has(item.id));
+});
 const filteredEvents = computed(() => events.value.filter((item) => matches(`${item.title} ${item.description}`)));
 const filteredRelations = computed(() => relations.value.filter((item) =>
   matches(`${characterName(item.subject_id)} ${item.relation_type} ${relationLabel(item.relation_type)} ${characterName(item.object_id)}`)));
+const allGroupedRelations = computed(() => groupRelations(relations.value));
+const groupedRelations = computed(() => {
+  const matched = new Set(filteredRelations.value.map((item) => item.id));
+  return allGroupedRelations.value.filter((group) => group.records.some((item) => matched.has(item.id)));
+});
 const filteredClues = computed(() => clues.value.filter((item) => matches(`${item.title} ${item.original_text} ${item.possible_meaning}`)));
 const chapterTitles = computed(() => Object.fromEntries(chapters.value.map((item) => [item.chapter_no, item.title])));
 const timelineGroups = computed(() => {
@@ -315,9 +319,6 @@ function toggleAllChapters() {
   else timelineGroups.value.forEach((group) => collapsedChapters.add(group.key));
 }
 const characterFacts = (id) => facts.value.filter((item) => item.entity_id === id && item.state === "active");
-const FACT_LABELS = { summary: "简介", identity: "身份", appearance: "外貌", personality: "性格",
-  behavior: "行为", speech: "台词", relationships: "关系", key_events: "关键经历", state_changes: "状态变化" };
-const factTypeLabel = (type) => FACT_LABELS[type] || type;
 const PROFILE_LIMIT = 220;
 const clip = (value, limit = 140) => {
   const flat = String(value || "").replace(/\s+/g, " ").trim();
@@ -325,24 +326,15 @@ const clip = (value, limit = 140) => {
 };
 function factIntro(character, limit) {
   if (!character) return "";
-  const values = ["summary", "identity"].flatMap((type) => characterFacts(character.id)
+  const values = ["summary", "identity", "personality", "appearance"].flatMap((type) => characterFacts(character.id)
     .filter((fact) => fact.fact_type === type)
     .map((fact) => displayValue(fact.value_json)));
-  const source = values.some(Boolean) ? values
-    : characterFacts(character.id).map((fact) => displayValue(fact.value_json));
-  return clip(source.filter(Boolean).join(" "), limit);
+  return clip([...new Set(values.filter(Boolean))].join(" "), limit);
 }
 function profileParagraphs(character) {
   const texts = (character?.synthesis || []).map((item) => item.text).filter(Boolean);
   if (!texts.length) return [];
-  const used = [texts[0]];
-  let total = texts[0].length;
-  // Keep the profile near 200 characters even when older synthesis paragraphs are short.
-  for (let index = 1; index < texts.length && total < 150; index += 1) {
-    used.push(texts[index]);
-    total += texts[index].length;
-  }
-  return used;
+  return [texts[0]];
 }
 function characterIntro(character) {
   const paragraphs = profileParagraphs(character);
@@ -354,7 +346,16 @@ function characterIdentity(character) {
   return identity ? clip(displayValue(identity.value_json), 60) : "";
 }
 function relationsOf(character) {
-  return relations.value.filter((item) => item.subject_id === character.id || item.object_id === character.id);
+  return allGroupedRelations.value.filter((item) => item.subject_id === character.id || item.object_id === character.id);
+}
+function relationDirections(group) {
+  return [...new Set(group.records.map((item) =>
+    `${characterName(item.subject_id)} → ${characterName(item.object_id)}：${relationLabel(item.relation_type)}`))].join("\n");
+}
+const relatedId = (group) => group.subject_id === detail.value?.id ? group.object_id : group.subject_id;
+function openRelatedCharacter(group) {
+  const character = characters.value.find((item) => item.id === relatedId(group));
+  if (character) openDetail(character);
 }
 async function regenerateProfile() {
   if (!detail.value || synthesisBusy.value || !bookId.value) return;
@@ -367,21 +368,27 @@ async function regenerateProfile() {
   } catch (err) { report(err); } finally { synthesisBusy.value = false; }
 }
 const detailProfile = computed(() => (detail.value ? characterIntro(detail.value) : ""));
-const detailSynthesis = computed(() => (detail.value
-  ? (detail.value.synthesis || []).slice(profileParagraphs(detail.value).length)
-  : []));
 const detailFacts = computed(() => (detail.value ? characterFacts(detail.value.id) : []));
+const detailMilestones = computed(() => (detail.value
+  ? characterMilestones(detail.value, facts.value, chapters.value) : []));
+const visibleMilestones = computed(() =>
+  milestonesExpanded.value ? detailMilestones.value : detailMilestones.value.slice(0, 6));
 const detailIdentity = computed(() => {
   const identity = detailFacts.value.find((fact) => fact.fact_type === "identity");
   return identity ? clip(displayValue(identity.value_json), 80) : "";
 });
 const detailRelations = computed(() => (detail.value
-  ? filteredRelations.value.filter((item) => item.subject_id === detail.value.id || item.object_id === detail.value.id)
+  ? relationsOf(detail.value)
   : []));
 const cardFor = (name) => cards.value.find((card) => card.name === name);
 function openDetail(character) {
   detail.value = character;
+  milestonesExpanded.value = false;
   detailOpen.value = true;
+}
+function openMilestoneChapter(chapter) {
+  citation.value = { chapter_id: chapter.chapter_id };
+  showReader.value = true;
 }
 function goCards() { router.push("/characters"); }
 async function createCard(character) {
@@ -426,17 +433,17 @@ async function renderRelationGraph() {
     states: visibleIds.has(item.id) ? [] : ["isolated"],
   }));
   const nodeIds = new Set(nodes.map((item) => item.id));
-  const edges = filteredRelations.value.filter((item) => nodeIds.has(item.subject_id) && nodeIds.has(item.object_id)).map((item) => ({
+  const edges = groupedRelations.value.filter((item) => nodeIds.has(item.subject_id) && nodeIds.has(item.object_id)).map((item) => ({
     id: item.id,
     source: item.subject_id,
     target: item.object_id,
     states: [],
     style: {
-      labelText: relationLabel(item.relation_type),
-      stroke: relationColor(item.relation_type),
+      labelText: item.labels.join("、"),
+      stroke: relationColor(item.labels.join("、")),
       lineWidth: 1.6,
-      lineDash: relationCategory(item.relation_type) === "hostile" ? [7, 4] : undefined,
-      endArrow: true,
+      lineDash: relationCategory(item.labels.join("、")) === "hostile" ? [7, 4] : undefined,
+      endArrow: false,
       endArrowSize: 8,
       labelFontSize: 10,
       labelFill: "#4b635a",
@@ -492,9 +499,22 @@ function openCitation(row) {
   citation.value = { chapter_id: row.chapter_id, start: row.start_offset, end: row.end_offset, quote: row.quote };
   showReader.value = true;
 }
-async function removeCharacter(row) { await remove(`/books/${bookId.value}/knowledge/characters/${row.id}`, "确认移除这个人物？"); }async function removeFact(row) { await remove(`/books/${bookId.value}/knowledge/facts/${row.id}`, "确认删除这个事实版本？"); }
+async function removeCharacter(row) { await remove(`/books/${bookId.value}/knowledge/characters/${row.id}`, "确认移除这个人物？"); }
 async function removeEvent(row) { await remove(`/books/${bookId.value}/knowledge/events/${row.id}`, "确认删除这个事件？"); }
-async function removeRelation(row) { await remove(`/books/${bookId.value}/knowledge/relations/${row.id}`, "确认删除这条关系？"); }
+async function removeRelationGroup(group) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除${characterName(group.subject_id)}与${characterName(group.object_id)}之间的全部 ${group.records.length} 条关系？`,
+      "删除关系", { type: "warning" });
+  } catch { return; }
+  try {
+    const results = await Promise.allSettled(group.records.map((item) =>
+      api.delete(`/books/${bookId.value}/knowledge/relations/${item.id}`)));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) report(failed.reason);
+    else ElMessage.success("关系已删除");
+  } finally { await load(); }
+}
 async function removeClue(row) { await remove(`/books/${bookId.value}/knowledge/clues/${row.id}`, "确认删除这个线索？"); }
 async function remove(path, message) {
   try { await ElMessageBox.confirm(message, "确认操作", { type: "warning" }); await api.delete(path); ElMessage.success("已更新知识库"); await load(); }
@@ -526,35 +546,42 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .character-tags { display:flex; flex-wrap:wrap; gap:6px; }
 .character-tag { padding:2px 9px; border-radius:999px; background:#f2f8f5; border:1px solid #e2efe9; color:#4c6d61; font-size:11px; }
 .character-profile { padding-top:10px; border-top:1px dashed #e8f0ec; }
-.character-profile-label { margin:0 0 4px; font-size:11px; letter-spacing:2px; color:#8ba79c; }
+.character-profile-label { margin:0 0 4px; font-size:11px; color:#8ba79c; }
 .character-actions { display:flex; justify-content:flex-end; gap:8px; }
 .drawer-profile { display:flex; align-items:center; gap:16px; padding:6px 0 16px; border-bottom:1px solid #edf1ee; }
 .drawer-avatar { width:76px; height:76px; flex:0 0 76px; border-radius:18px; object-fit:cover; background:#e7f2ee; border:2px solid #cfe6dc; box-shadow:0 6px 18px rgba(41,85,69,.12); }
 .drawer-profile-content { min-width:0; }
-.drawer-profile-kicker { margin:0; font-size:11px; letter-spacing:2px; color:#8ba79c; }
+.drawer-profile-kicker { margin:0; font-size:11px; color:#8ba79c; }
 .drawer-profile-name { margin:2px 0 0; font-size:22px; color:#1d4d42; overflow-wrap:anywhere; }
-.drawer-profile-alias { margin:4px 0 8px; color:#6d857b; font-size:13px; }
+.drawer-profile-alias { margin:4px 0 8px; color:#6d857b; font-size:13px; overflow-wrap:anywhere; }
 .drawer-profile-meta { display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:13px; color:#4d6b60; }
 .drawer-profile-meta strong { color:#1d4d42; }
 .drawer-section { margin-top:18px; }
 .drawer-section h3 { margin:0 0 8px; font-size:15px; color:#22453c; }
 .section-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
 .section-heading h3 { margin:0; }
-.profile-description { padding:16px; border-radius:12px; background:linear-gradient(160deg,#f7fbf9,#f1f7f4); border:1px solid #e3efe9; }
-.profile-text { margin:0; color:#3f5750; line-height:1.85; font-size:14px; text-align:justify; }
+.profile-description { padding:16px 0; border-bottom:1px solid #e3efe9; }
+.profile-text { margin:0; color:#3f5750; line-height:1.85; font-size:14px; overflow-wrap:anywhere; }
 .profile-empty { margin:0; color:#8ba29a; font-size:13px; }
 .profile-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-.profile-facts > div { padding:10px 12px; border:1px solid #e7efeb; border-radius:10px; background:#fbfdfc; }
-.profile-facts span { display:block; margin-bottom:3px; color:#8da59c; font-size:11px; letter-spacing:1px; }
+.profile-facts > div { min-width:0; padding:10px 0; border-bottom:1px solid #e7efeb; }
+.profile-facts span { display:block; margin-bottom:3px; color:#8da59c; font-size:11px; }
 .profile-facts strong { display:block; color:#24463c; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
-.relation-chips { display:flex; flex-wrap:wrap; gap:8px; }
-.relation-chip { display:inline-flex; align-items:center; padding:5px 11px; border-radius:999px; border:1px solid transparent; font-size:12px; }
-.relation-chip-friendly { background:#eef7f0; border-color:#d6ebdc; color:#2f7a51; }
-.relation-chip-hostile { background:#fbf0ef; border-color:#f2dcd9; color:#a84c44; }
-.relation-chip-kinship { background:#fbf6ea; border-color:#efe1c6; color:#8a6a20; }
-.relation-chip-neutral { background:#f1f5f7; border-color:#e0e9ee; color:#4c6a78; }
-.synthesis-paragraph { margin:0 0 10px; color:#3f5750; line-height:1.7; }
-.drawer-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; gap:8px; padding:14px 0 4px; margin-top:18px; background:#fff; border-top:1px solid #edf1ee; }
+.milestone-list { margin:0; padding:0; list-style:none; }
+.milestone-list li { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; padding:10px 0 10px 12px; border-left:2px solid #d6e5df; border-bottom:1px solid #edf1ee; }
+.milestone-list p { flex:1 1 240px; margin:0; color:#3f5750; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+.milestone-chapters { display:flex; flex-wrap:wrap; gap:6px 12px; color:#8b9892; font-size:11px; }
+.milestone-chapters .el-button { margin:0; font-size:11px; }
+.detail-relation-list { display:grid; }
+.detail-relation { display:grid; grid-template-columns:32px minmax(60px,1fr) minmax(0,1.5fr) 16px; align-items:center; gap:10px; width:100%; padding:12px 0; border:0; border-bottom:1px solid #edf1ee; background:transparent; text-align:left; color:#31584c; cursor:pointer; }
+.detail-relation:hover { background:#f5faf7; }
+.detail-relation:focus-visible { outline:2px solid #4d9b73; outline-offset:2px; }
+.detail-relation img { width:32px; height:32px; object-fit:cover; border-radius:50%; background:#e7f2ee; }
+.detail-relation strong { font-size:13px; overflow-wrap:anywhere; }
+.detail-relation .el-icon { color:#8ca399; }
+.relation-labels { color:#61788b; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.relation-pair { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; overflow-wrap:anywhere; }
+.drawer-actions { display:flex; justify-content:flex-end; gap:8px; padding:12px 0 0; background:#fff; border-top:1px solid #edf1ee; }
 .character-title { min-width:0; }
 .character-title h2 { margin:0; overflow-wrap:anywhere; font-size:18px; }
 .character-title p { margin:4px 0 0; }
@@ -578,19 +605,11 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .chapter-events .event-description { margin:6px 0 0; color:#53645c; }
 .expand-mark { color:#6d8b80; font-size:13px; }
 .card-heading h2 { margin:0; font-size:18px; }
-.fact-list { margin-top:12px; }
-.fact-row,.review-row { padding:10px 0; border-top:1px solid #edf1ee; }
-.fact-row { display:flex; justify-content:space-between; gap:10px; }
-.fact-row strong,.fact-row p { margin:0; }
-.fact-row p { margin-top:4px; color:#53645c; }
-.fact-actions { display:flex; align-items:center; white-space:nowrap; }
+.review-row { padding:10px 0; border-top:1px solid #edf1ee; }
 .card-actions { margin-top:14px; justify-content:flex-end; }
 .relation-record { padding:14px 0; border-bottom:1px solid #edf1ee; }
-.relation-record small { display:block; color:#718078; margin-top:5px; }
-.relation-arrow { margin:0 10px; color:#70958a; }
 .relation-panel { padding:18px; }
 .relation-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
-.relation-type { margin:0 10px; }
 .relation-graph { position:relative; width:100%; height:560px; overflow:hidden; border-radius:10px; background:radial-gradient(circle at 50% 42%,#ffffff 0%,#f7fbf9 68%,#eef5f1 100%); border:1px solid #e6efea; }
 .relation-graph-legend { position:absolute; top:12px; right:12px; z-index:2; display:flex; gap:10px; flex-wrap:wrap; max-width:300px; padding:8px 10px; border:1px solid #e0ebe5; border-radius:8px; background:rgba(255,255,255,.9); color:#60766b; font-size:11px; box-shadow:0 5px 16px rgba(39,48,42,.06); }
 .relation-graph-legend span { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
@@ -599,4 +618,13 @@ onBeforeUnmount(() => { relationGraph?.destroy(); relationGraph = null; });
 .relation-graph-wrap { margin-top:8px; }
 .quote-text { padding:12px; background:#f6faf7; border-left:3px solid #82ad9d; color:#4d6258; }
 .review-row p { white-space:pre-wrap; max-width:700px; color:#53645c; }
-@media (max-width:700px) { .knowledge-summary-head { display:block; } .knowledge-metrics { margin-top:16px; } .fact-row,.review-row { display:block; } .fact-actions { margin-top:8px; } }</style>
+@media (max-width:700px) {
+  .knowledge-summary-head { display:block; }
+  .knowledge-metrics { margin-top:16px; }
+  .knowledge-grid { grid-template-columns:minmax(0,1fr); }
+  .character-collapsed-row { flex-wrap:wrap; }
+  .character-actions,.drawer-actions { flex-wrap:wrap; }
+  .drawer-actions .el-button { margin-left:0; }
+  .review-row { display:block; }
+}
+</style>

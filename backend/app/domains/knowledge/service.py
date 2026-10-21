@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from backend.app.db.database import identifier, now
 
 from .repository import KnowledgeRepository
+from .presentation import character_milestones
 
 
 class KnowledgeService:
@@ -55,6 +56,7 @@ class KnowledgeService:
             row["synthesis_status"] = content.get("synthesis_status") or "pending"
             row["first_chapter"] = content.get("first_chapter") or content.get("chapter_no")
             row["last_chapter"] = content.get("last_chapter")
+            row["milestones"] = character_milestones(content)
         return rows
 
     def synthesize_character(self, user_id, book_id, character_id, profile_id=None):
