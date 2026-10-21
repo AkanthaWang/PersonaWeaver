@@ -5,7 +5,7 @@ from backend.app.domains.knowledge.service import KnowledgeService
 from backend.tests.test_character_card import book_with_character
 
 
-def test_milestones_keep_actual_chapters_deduplicate_and_ignore_minor_facts():
+def test_milestones_keep_one_actual_chapter_deduplicate_and_ignore_minor_facts():
     content = {"evidence": [
         {"chapter_id": "c1", "chapter_no": 1, "identity": "医师", "speech": ["你好"]},
         {"chapter_id": "c8", "chapter_no": 8, "key_events": ["拜师。"]},
@@ -14,8 +14,24 @@ def test_milestones_keep_actual_chapters_deduplicate_and_ignore_minor_facts():
     ]}
     result = character_milestones(content)
     assert len(result) == 2
-    assert [chapter["chapter_no"] for chapter in result[0]["chapters"]] == [3, 8]
+    assert [chapter["chapter_no"] for chapter in result[0]["chapters"]] == [3]
     assert all(chapter["chapter_no"] != 1 for event in result for chapter in event["chapters"])
+
+
+def test_multiple_sources_select_one_earliest_numbered_chapter_without_changing_evidence():
+    content = {"evidence": [
+        {"key_events": ["拜师"], "sources": [
+            {"chapter_id": "unknown"},
+            {"chapter_id": "c10", "chapter_no": 10},
+            {"chapter_id": "c2", "chapter_no": 2},
+        ]},
+        {"key_events": ["晋升"], "chapter_id": "c3", "chapter_no": 3},
+    ]}
+    result = character_milestones(content)
+    assert [[chapter["chapter_no"] for chapter in event["chapters"]] for event in result] == [[2], [3]]
+    assert result[0]["chapters"][0]["chapter_id"] == "c2"
+    assert len(content["evidence"][0]["sources"]) == 3
+    assert content["evidence"][0]["sources"][0]["chapter_id"] == "unknown"
 
 
 def test_legacy_history_is_used_without_assigning_overall_first_chapter():

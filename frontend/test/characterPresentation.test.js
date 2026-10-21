@@ -30,7 +30,7 @@ test("matching names never merge different character IDs and pair IDs cannot col
   assert.equal(new Set(groups.map((group) => group.id)).size, 3);
 });
 
-test("milestones deduplicate repeated events, preserve chapters and exclude detailed attributes", () => {
+test("milestones deduplicate repeated events, keep one chapter and exclude detailed attributes", () => {
   const character = { id: "a", milestones: [
     { text: "加入学院。", chapters: [{ chapter_id: "c3", chapter_no: 3 }] },
     { text: "加入学院", chapters: [{ chapter_id: "c2", chapter_no: 2 }] },
@@ -41,8 +41,24 @@ test("milestones deduplicate repeated events, preserve chapters and exclude deta
     keyFact({ entity_id: "b", value_json: '["其他人的事件"]' }),
   ]);
   assert.equal(result.length, 2);
-  assert.deepEqual(result[0].chapters.map((chapter) => chapter.chapter_no), [2, 3]);
+  assert.deepEqual(result[0].chapters.map((chapter) => chapter.chapter_no), [2]);
   assert.equal(character.milestones.length, 3);
+});
+
+test("multi-source milestones select one earliest numbered chapter without changing original sources", () => {
+  const sources = [
+    { chapter_id: "unknown" },
+    { chapter_id: "c10", chapter_no: 10 },
+    { chapter_id: "c2", chapter_no: 2 },
+  ];
+  const result = characterMilestones({ id: "a", milestones: [
+    { text: "拜师", chapters: sources },
+    { text: "晋升", chapters: [{ chapter_id: "c3", chapter_no: 3 }] },
+  ] }, [keyFact()]);
+  assert.deepEqual(result.map((item) => item.chapters.map((chapter) => chapter.chapter_no)), [[2], [3]]);
+  assert.equal(result[0].chapters[0].chapter_id, "c2");
+  assert.equal(sources.length, 3);
+  assert.equal(sources[0].chapter_id, "unknown");
 });
 
 test("manual key events augment extracted milestones and use their real chapter", () => {

@@ -36,6 +36,7 @@ def character_milestones(content):
                     milestone["chapters"].append(chapter)
     for milestone in groups.values():
         milestone["chapters"].sort(key=lambda chapter: chapter["chapter_no"] if chapter["chapter_no"] is not None else float("inf"))
+        milestone["chapters"] = milestone["chapters"][:1]
     return sorted(groups.values(), key=lambda milestone: next(
         (chapter["chapter_no"] for chapter in milestone["chapters"] if chapter["chapter_no"] is not None),
         float("inf"),

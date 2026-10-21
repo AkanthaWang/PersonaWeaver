@@ -79,7 +79,8 @@ export function characterMilestones(character, facts = [], chapters = []) {
   }
   return [...groups.values()].map((entry) => ({
     ...entry,
-    chapters: entry.chapters.toSorted((a, b) => (a.chapter_no ?? Infinity) - (b.chapter_no ?? Infinity)),
+    // Show the earliest documented chapter, including for legacy multi-source responses.
+    chapters: entry.chapters.toSorted((a, b) => (a.chapter_no ?? Infinity) - (b.chapter_no ?? Infinity)).slice(0, 1),
   })).sort((a, b) =>
     (a.chapters[0]?.chapter_no ?? Infinity) - (b.chapters[0]?.chapter_no ?? Infinity));
 }

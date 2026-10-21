@@ -182,13 +182,13 @@
           <li v-for="milestone in visibleMilestones" :key="milestone.id">
             <p>{{ clip(milestone.text, 90) }}</p>
             <div class="milestone-chapters">
-              <template v-for="(chapter, index) in milestone.chapters" :key="chapter.chapter_id || index">
-                <el-button v-if="chapter.chapter_id" link type="primary" :title="chapter.chapter_title || ''" @click="openMilestoneChapter(chapter)">
-                  {{ chapter.chapter_no != null ? `第 ${chapter.chapter_no} 章` : chapter.chapter_title || '相关章节' }}
-                </el-button>
-                <span v-else>{{ chapter.chapter_no != null ? `第 ${chapter.chapter_no} 章` : chapter.chapter_title }}</span>
-              </template>
-              <span v-if="!milestone.chapters.length">章节未标注</span>
+              <el-button v-if="milestone.chapters[0]?.chapter_id" link type="primary" :title="milestone.chapters[0].chapter_title || ''" @click="openMilestoneChapter(milestone.chapters[0])">
+                {{ milestone.chapters[0].chapter_no != null ? `第 ${milestone.chapters[0].chapter_no} 章` : milestone.chapters[0].chapter_title || '相关章节' }}
+              </el-button>
+              <span v-else-if="milestone.chapters[0]">
+                {{ milestone.chapters[0].chapter_no != null ? `第 ${milestone.chapters[0].chapter_no} 章` : milestone.chapters[0].chapter_title }}
+              </span>
+              <span v-else>章节未标注</span>
             </div>
           </li>
         </ol>
