@@ -33,7 +33,13 @@ def create_app(config: Config | None = None) -> FastAPI:
         db.initialize()
         from .domains.conversation.mirror import recover_mirrors
         recover_mirrors(db)
-        yield
+        from .domains.conversation.generation import GenerationEngine
+        app.state.conversation_engine = GenerationEngine(db)
+        app.state.conversation_engine.recover()
+        try:
+            yield
+        finally:
+            await app.state.conversation_engine.shutdown()
 
     app = FastAPI(title="PersonaWeaver Local API", version="3.0.0", lifespan=lifespan)
     app.state.db = db

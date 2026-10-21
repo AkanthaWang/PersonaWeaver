@@ -287,3 +287,26 @@ Agent 或用户创建的事实必须尽可能绑定章节证据。事实更新�
 无法解析关系目标的人物会进入 `knowledge_reviews`，可在知识库页面或审核 API 中处理。
 伏笔可通过 `/api/v1/books/{book_id}/knowledge/clues/{clue_id}/verify` 从候选状态转为
 `revealed`。前端知识库入口为 `/knowledge`。
+
+## 10. 对话生成与上下文预算（2026-10-21）
+
+对话使用 SQLite 消息树的活动路径；压缩节点保存增量摘要与完整近期轮次，原消息不删除。
+携带被放弃分支摘要必须显式请求。发送、切换、压缩、清空、删除共享单进程会话锁。
+SQLite 事务同时标记 JSONL 待同步，镜像按节点重建；镜像失败仅告警，不回滚回复。
+
+模型配置持久化 `context_window`，旧配置默认 32,768。浏览器旧值只在用户保存时迁移，
+运行预算以后端为准。预算包含规则、角色卡、历史、本次输入及可选材料，预留最大输出和安全余量；
+80% 阈值先移除可选材料再压缩旧历史，默认保留约 2,000 tokens 的完整轮次。
+固定输入无法容纳时返回 422，不静默截断。
+
+`POST /conversations/{id}/messages` 和 `/messages/stream` 共享持久化生成引擎。
+可选 `request_id` 在会话内唯一；重复请求重放，参数冲突 409，重新生成必须新 ID。
+SSE 事件依次为 `start/context/sources/delta/terminal`，支持 UTF-8 跨块和心跳。
+`GET /generations/{request_id}` 查询状态，`POST /generations/{request_id}/cancel` 停止。
+`POST /context-preview` 只估算上下文，不调用模型。
+
+状态为 `running/completed/cancelled/failed/interrupted`。已有文本的停止、断连、错误会保存部分回复，
+零文本不写空消息。重启恢复运行记录为中断，不自动付费重试。网络期间不持有 SQLite 写事务。
+OpenAI 兼容、Responses、Ollama 为原生流式；Anthropic、Google、vivo 为整段兼容，
+通过 `capabilities.native_streaming` 明确标记。停止关闭上游连接，但不保证提供商停止计费。
+前端预算为估算，提供商 `usage` 单独展示。

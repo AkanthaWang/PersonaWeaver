@@ -37,23 +37,26 @@ class SettingsRepository(SQLiteRepository):
     def update_profile(self, user_id: str, profile_id: str, values):
         return self.execute(
             "UPDATE model_profiles SET name=?,provider=?,provider_name=?,api_protocol=?,headers_json=?,base_url=?,model=?,api_key=?,temperature=?,top_p=?," 
-            "max_tokens=?,timeout_seconds=?,updated_at=?,model_type=?,test_status=?,test_message=?,tested_at=? WHERE user_id=? AND id=?",
+            "max_tokens=?,timeout_seconds=?,updated_at=?,model_type=?,test_status=?,test_message=?,tested_at=?,context_window=? WHERE user_id=? AND id=?",
             (values["name"], values["provider"], values["provider_name"], values["api_protocol"], values["headers_json"], values["base_url"], values["model"], values["api_key"],
              values["temperature"], values["top_p"], values["max_tokens"], values["timeout_seconds"],
              values["updated_at"], values["model_type"], values["test_status"], values["test_message"],
-             values["tested_at"], user_id, profile_id),
+             values["tested_at"], values.get("context_window", current_window(self, profile_id)), user_id, profile_id),
         )
 
     def activate_profile(self, user_id: str, profile):
         settings = (user_id, profile["provider"], profile["base_url"], profile["model"], profile["api_key"],
                     profile["temperature"], profile["top_p"], profile["max_tokens"], profile["timeout_seconds"])
         self.execute(
-            "INSERT INTO model_settings VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "INSERT INTO model_settings(user_id,provider,base_url,model,api_key,temperature,top_p,max_tokens,timeout_seconds) "
+            "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
             "provider=excluded.provider,base_url=excluded.base_url,model=excluded.model,api_key=excluded.api_key,"
             "temperature=excluded.temperature,top_p=excluded.top_p,max_tokens=excluded.max_tokens,"
             "timeout_seconds=excluded.timeout_seconds",
             settings,
         )
+        self.execute("UPDATE model_settings SET context_window=? WHERE user_id=?",
+                     (profile.get("context_window", 32768), user_id))
         self.execute(
             "INSERT INTO model_profile_state(user_id,active_profile_id) VALUES (?,?) "
             "ON CONFLICT(user_id) DO UPDATE SET active_profile_id=excluded.active_profile_id",
@@ -74,8 +77,9 @@ class SettingsRepository(SQLiteRepository):
         return self.one("SELECT * FROM model_selections WHERE user_id=?", (user_id,))
 
     def save_model(self, user_id: str, settings):
-        return self.execute(
-            "INSERT INTO model_settings VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+        self.execute(
+            "INSERT INTO model_settings(user_id,provider,base_url,model,api_key,temperature,top_p,max_tokens,timeout_seconds) "
+            "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
             "provider=excluded.provider,base_url=excluded.base_url,model=excluded.model,api_key=excluded.api_key,"
             "temperature=excluded.temperature,top_p=excluded.top_p,max_tokens=excluded.max_tokens,"
             "timeout_seconds=excluded.timeout_seconds",
@@ -83,6 +87,8 @@ class SettingsRepository(SQLiteRepository):
                 "provider", "base_url", "model", "api_key", "temperature", "top_p", "max_tokens", "timeout_seconds",
             )]),
         )
+        self.execute("UPDATE model_settings SET context_window=? WHERE user_id=?",
+                     (settings.get("context_window", 32768), user_id))
 
     def sync_active_profile(self, user_id: str, profile_id: str, settings):
         from backend.app.db.database import now
@@ -95,3 +101,8 @@ class SettingsRepository(SQLiteRepository):
                 "provider", "base_url", "model", "api_key", "temperature", "top_p", "max_tokens", "timeout_seconds",
             )) + (now(), profile_id, user_id),
         )
+
+
+def current_window(repo, profile_id):
+    row = repo.one("SELECT context_window FROM model_profiles WHERE id=?", (profile_id,))
+    return row["context_window"] if row else 32768

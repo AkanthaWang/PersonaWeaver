@@ -124,6 +124,7 @@ class ConversationRepository(SQLiteRepository):
         title: str,
         stamp: str,
         metadata: dict | None = None,
+        run_update: dict | None = None,
     ):
         with self.database.connect() as conn:
             conn.execute(
@@ -143,6 +144,13 @@ class ConversationRepository(SQLiteRepository):
                 "UPDATE conversations SET title=?,active_leaf_id=?,updated_at=? WHERE id=?",
                 (title, assistant_node_id, stamp, conversation_id),
             )
+            if run_update:
+                conn.execute(
+                    "UPDATE conversation_runs SET status=?,reply=?,user_node_id=?,assistant_node_id=?,"
+                    "error=?,usage=?,updated_at=? WHERE conversation_id=? AND request_id=?",
+                    (run_update["status"], reply, user_node_id, assistant_node_id, run_update.get("error"),
+                     _dump(run_update.get("usage", {})), stamp, conversation_id, run_update["request_id"]),
+                )
 
     def append_compaction(
         self,
@@ -196,6 +204,7 @@ class ConversationRepository(SQLiteRepository):
 
     def clear_messages(self, conversation_id: str, stamp: str):
         with self.database.connect() as conn:
+            conn.execute("DELETE FROM conversation_runs WHERE conversation_id=?", (conversation_id,))
             conn.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
             conn.execute("UPDATE conversations SET active_leaf_id=NULL,updated_at=? WHERE id=?", (stamp, conversation_id))
 

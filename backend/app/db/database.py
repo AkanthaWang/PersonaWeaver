@@ -780,6 +780,8 @@ class BookDatabase(Database):
                 raise RuntimeError(f"Unsupported book database schema version: {version}")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(BOOK_SCHEMA)
+            from backend.app.domains.conversation.knowledge_search import initialize_index
+            initialize_index(conn)
             character_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_characters)").fetchall()}
             if "frequency" not in character_columns:
                 conn.execute(

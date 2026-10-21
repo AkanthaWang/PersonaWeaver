@@ -37,18 +37,19 @@ def error_diagnostics(exc):
 
 
 def load_settings(db, user_id):
+    row = db.one("SELECT * FROM model_settings WHERE user_id=?", (user_id,))
+    if row:
+        return {key: value for key, value in row.items() if key != "user_id"}
     database_path = getattr(db, "path", None)
     if database_path is not None:
         stored = AgentSettingsStore(Path(database_path).parent).get_user_model(user_id)
         if stored:
-            return stored
-    row = db.one("SELECT * FROM model_settings WHERE user_id=?", (user_id,))
-    if row:
-        return {key: value for key, value in row.items() if key != "user_id"}
+            return {"context_window": 32768, **stored}
     settings = {
         "provider": "ollama", "base_url": "http://127.0.0.1:11434",
         "model": "qwen2.5:7b", "api_key": "", "temperature": 0.7,
         "top_p": 0.9, "max_tokens": 2048, "timeout_seconds": 60,
+        "context_window": 32768,
     }
     env = ecnu_model_env()
     if env.get("ECNU_API_BASE_URL") and env.get("ECNU_MODEL_NAME"):
@@ -67,7 +68,7 @@ def public_settings(settings):
 
 PROFILE_SETTING_FIELDS = (
     "provider", "base_url", "model", "api_key",
-    "temperature", "top_p", "max_tokens", "timeout_seconds",
+    "temperature", "top_p", "max_tokens", "timeout_seconds", "context_window",
 )
 
 
@@ -84,6 +85,7 @@ def settings_from_profile(profile):
     settings["api_key"] = profile.get("api_key") or ""
     settings["api_protocol"] = profile.get("api_protocol") or ""
     settings["headers"] = json.loads(profile.get("headers_json") or "{}")
+    settings["context_window"] = profile.get("context_window") or 32768
     return settings
 
 
@@ -199,6 +201,13 @@ def _legacy_extract(settings, chapter):
 
 
 def error_message(exc):
+    import httpx
+    if isinstance(exc, httpx.TimeoutException):
+        return "模型请求超时，请检查模型状态或增加超时时间"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"模型接口返回 HTTP {exc.response.status_code}，请检查凭据、模型名称和额度"
+    if isinstance(exc, httpx.RequestError):
+        return "无法连接模型服务，请检查地址、网络、代理和证书"
     if isinstance(exc, requests.Timeout):
         return "模型请求超时，请检查模型状态或增加超时时间"
     if isinstance(exc, requests.exceptions.ProxyError):

@@ -94,19 +94,30 @@ class ConversationService:
         path = self.repo.path(conversation_id, active_leaf_id)
         return {
             **item,
-            "messages": [entry for entry in path if entry.get("entry_type") in {"message", "custom_message"}],
+            "messages": [_public_entry(entry) for entry in path if entry.get("entry_type") in {"message", "custom_message"}],
             "context": _public_path(path),
             "tree": _public_tree(self.repo.tree(conversation_id)),
             "tokens": compaction.messages_tokens(resolve_path(path)),
         }
 
     def create(self, user_id: str, payload):
+        book_id = payload.book_id
         if payload.card_id:
-            self.characters.owned(user_id, payload.card_id)
+            card = self.characters.owned(user_id, payload.card_id)
+            if book_id and book_id != card["book_id"]:
+                raise HTTPException(422, "角色卡与关联作品不一致")
+            book_id = card["book_id"]
+        if book_id:
+            self.characters.book_owned(user_id, book_id)
         profile_id = self._validated_profile(user_id, payload.profile_id)
         conversation_id, stamp = identifier("conversation"), now()
         self.repo.create(
             (conversation_id, user_id, payload.title, payload.card_id, profile_id, None, None, self.store.cwd, stamp, stamp)
+        )
+        self.db.execute(
+            "UPDATE conversations SET book_id=?,mode=?,knowledge_enabled=?,memory_enabled=? WHERE id=?",
+            (book_id, payload.mode or ("roleplay" if payload.card_id else "assistant"),
+             int(payload.knowledge_enabled), int(payload.memory_enabled), conversation_id),
         )
         row = self.get_owned(user_id, conversation_id)
         self._ensure_session_file(row)
@@ -117,6 +128,20 @@ class ConversationService:
     def rename(self, user_id: str, conversation_id: str, payload):
         row = self.get_owned(user_id, conversation_id)
         stamp = now()
+        fields = payload.model_dump(exclude_unset=True)
+        if "book_id" in fields:
+            if row["card_id"]:
+                card = self.characters.owned(user_id, row["card_id"])
+                if fields["book_id"] != card["book_id"]:
+                    raise HTTPException(422, "角色会话不能关联其他作品")
+            if fields["book_id"]:
+                self.characters.book_owned(user_id, fields["book_id"])
+        for field in ("book_id", "mode", "knowledge_enabled", "memory_enabled"):
+            if field in fields:
+                if field != "book_id" and fields[field] is None:
+                    raise HTTPException(422, "设置不能为空")
+                self.db.execute(f"UPDATE conversations SET {field}=?,updated_at=? WHERE id=?",
+                                (fields[field], stamp, conversation_id))
         if payload.title is not None:
             self.repo.rename(conversation_id, payload.title, stamp)
         if payload.profile_id is not None:

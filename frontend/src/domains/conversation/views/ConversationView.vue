@@ -20,7 +20,7 @@
         </div>
         <div v-if="selected" class="chat-heading-actions">
           <el-button v-if="selectedCard" text class="heading-link" :icon="InfoFilled" @click="showCard = true">角色设定</el-button>
-          <el-dropdown v-if="tree.length" trigger="click" class="branch-dropdown" @command="selectBranch"><el-button text class="branch-trigger"><span class="branch-trigger-dot" />{{ activeNodeId ? '当前分支' : '新分支起点' }}<small>{{ tree.length }} 节点</small><ArrowDown /></el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="__root__">新分支起点</el-dropdown-item><el-dropdown-item v-for="node in visibleTree" :key="node.id" :command="node.id" :class="{ 'branch-path-item': activePath.has(node.id) }">{{ '　'.repeat(node.depth) }}{{ nodeKind(node) }} · {{ nodeText(node) }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+          <el-dropdown v-if="tree.length" trigger="click" class="branch-dropdown" :disabled="sending" @command="selectBranch"><el-button text class="branch-trigger" :disabled="sending"><span class="branch-trigger-dot" />{{ activeNodeId ? '当前分支' : '新分支起点' }}<small>{{ tree.length }} 节点</small><ArrowDown /></el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="__root__">新分支起点</el-dropdown-item><el-dropdown-item v-for="node in visibleTree" :key="node.id" :command="node.id" :class="{ 'branch-path-item': activePath.has(node.id) }">{{ '　'.repeat(node.depth) }}{{ nodeKind(node) }} · {{ nodeText(node) }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
         </div>
       </div>
       <section ref="timeline" class="messages pi-messages timeline">
@@ -45,13 +45,20 @@
                     :render-code-blocks-as-pre="true"
                   />
                 </div>
+                <el-tag v-if="['cancelled', 'interrupted', 'failed'].includes(entry.message.metadata?.status)" size="small" type="warning" effect="plain">已中断 · 已保存文本，可继续对话</el-tag>
                 <div v-if="entry.message.id && !entry.pending" class="message-actions"><el-tooltip content="复制内容" placement="top"><el-button text size="small" :icon="DocumentCopy" @click="copyMessage(entry.message)" /></el-tooltip><el-tooltip content="从此处继续（新建分支）" placement="top"><el-button text size="small" :icon="Share" :disabled="sending" @click="selectNode(entry.message.id)" /></el-tooltip><el-tooltip content="标记该节点" placement="top"><el-button text size="small" :icon="PriceTag" :disabled="sending" @click="labelNode(entry.message)" /></el-tooltip></div>
               </div>
             </article>
           </template>
-          <div v-if="sending" class="typing-indicator"><span /><span /><span />正在生成回复</div>
+          <div v-if="sending" class="typing-indicator"><span /><span /><span />{{ nativeStreaming === false ? '此协议返回整段回复，等待模型完成' : '正在生成回复' }}</div>
         </template>
       </section>
+      <div v-if="selected" class="generation-controls">
+        <el-button v-if="sending" type="danger" plain :icon="VideoPause" :loading="stopping" @click="stop">停止生成</el-button>
+        <el-button v-else-if="lastAttempt && error" plain :icon="Refresh" @click="retry">{{ uncertain ? '重连本次请求（不重复生成）' : '重新生成（新请求）' }}</el-button>
+        <small v-if="budgetUsage" class="muted">输入估算 {{ budgetUsage.input_tokens.toLocaleString() }} / {{ budgetUsage.available_input.toLocaleString() }} · 预留输出 {{ budgetUsage.max_output.toLocaleString() }}</small>
+        <small v-if="actualUsage" class="muted">提供商 usage：{{ JSON.stringify(actualUsage) }}</small>
+      </div>
       <form class="composer pi-composer" @submit.prevent="send"><div v-if="error" class="composer-error" role="alert" aria-live="polite"><el-icon><WarningFilled /></el-icon><span>{{ error }}</span></div><div class="composer-box"><el-input v-model="draft" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" resize="none" maxlength="12000" :disabled="!selected || sending" :placeholder="composerPlaceholder" aria-label="消息" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send" /><div class="composer-toolbar"><span class="composer-toolbar-status" :class="{ 'is-ready': canSend }">{{ sending ? '正在生成回复…' : canSend ? '准备发送' : selected ? '输入消息后发送' : '先选择一个会话' }}</span><el-button type="primary" :icon="Promotion" native-type="submit" :disabled="!canSend" :loading="sending" :aria-label="sending ? '正在发送消息' : '发送消息'">发送</el-button></div></div><div class="composer-footer"><el-dropdown trigger="click" popper-class="model-popover" class="model-menu" :disabled="!selected || sending" @command="changeModel"><button type="button" class="model-menu-trigger" :class="{ 'is-loading': profilesLoading }" :disabled="!selected || sending || profilesLoading" :title="activeModelLabel"><span class="model-menu-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7z" /><circle cx="12" cy="12" r="2.6" /><path d="M12 9.4V6.2M12 17.8v-3.2M14.3 13.3l2.7 1.6M7 9.1l2.7 1.6" /></svg></span><span class="model-menu-copy"><span class="model-menu-name">{{ modelMenuName }}</span><small v-if="activeModel">{{ activeModel.model }}</small></span><ArrowDown class="model-menu-caret"  /></button><template #dropdown><div class="model-popover-head"><strong>切换模型</strong><small>切换后会绑定到当前会话</small></div><el-dropdown-menu class="model-menu-list"><el-dropdown-item v-for="profile in profiles" :key="profile.id" :command="profile.id" :class="{ 'model-menu-active': profile.id === selectedProfileId }"><span class="model-menu-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7z" /><circle cx="12" cy="12" r="2.6" /></svg></span><span class="model-menu-option"><span class="model-menu-option-name">{{ profile.name || profile.model }}</span><small>{{ profile.model }}</small></span><el-icon v-if="profile.id === selectedProfileId" class="model-menu-check"><Check /></el-icon></el-dropdown-item><el-dropdown-item v-if="!profiles.length" disabled>暂无可用模型</el-dropdown-item></el-dropdown-menu><div class="model-popover-foot"><button type="button" class="model-popover-action" @click="goSettings">模型设置</button><button type="button" class="model-popover-action" disabled title="待开放">上下文长度</button></div></template></el-dropdown><div v-if="selected" class="context-meter" :class="contextLevel" :title="`已使用 ${estimateTokens.toLocaleString()} tokens`"><span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill" :style="{ width: `${contextPercent}%` }" /></span><span class="context-meter-value">{{ estimateTokens.toLocaleString() }} tokens</span></div><span v-else class="context-meter-empty">选择会话后开始</span><div class="composer-footer-right"><span class="composer-hint">Ctrl / ⌘ + Enter 发送</span><span class="composer-count" :class="draftCountClass">{{ draft.length.toLocaleString() }} / 12,000</span></div></div></form>
     </section>
   </div>
@@ -61,20 +68,24 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ArrowDown, ChatDotRound, ChatLineRound, Check, Collection, DocumentCopy, EditPen, InfoFilled, MoreFilled, Plus, PriceTag, Promotion, Search, Share, User, WarningFilled } from "@element-plus/icons-vue";
+import { ArrowDown, ChatDotRound, ChatLineRound, Check, Collection, DocumentCopy, EditPen, InfoFilled, MoreFilled, Plus, PriceTag, Promotion, Refresh, Search, Share, User, VideoPause, WarningFilled } from "@element-plus/icons-vue";
 import MarkdownRender from "markstream-vue";
 import "markstream-vue/index.css";
 import { api } from "../../../api/client";
 import { useAuthStore } from "../../../stores/auth";
 import { report, confirmDelete } from "../../../lib/ui";
 import { characterAvatarUrl } from "../../../lib/avatar";
+import { GenerationSession, timelineForPath } from "../stream.js";
 const auth = useAuthStore(), route = useRoute(), router = useRouter();
 const conversations = ref([]), cards = ref([]), profiles = ref([]), model = ref(null), selected = ref(null), messages = ref([]), tree = ref([]), draft = ref(""), error = ref("");
 const conversationFilter = ref(""), selectedProfileId = ref(""), newProfile = ref(""), newTitle = ref(""), newCard = ref("");
 const loading = ref(false), sending = ref(false), creating = ref(false), profilesLoading = ref(false), timeline = ref(null), showCreate = ref(false), showCard = ref(false), pendingMessage = ref(null);
+const pendingAssistant = ref(null), budgetUsage = ref(null), actualUsage = ref(null), nativeStreaming = ref(true), stopping = ref(false), lastAttempt = ref(null), uncertain = ref(false);
+let previewEpoch = 0, previewTimer;
+const generation = new GenerationSession({ api, onEvent: receiveEvent });
 const activeNodeId = computed(() => selected.value?.active_leaf_id || null), activePath = computed(() => new Set(messages.value.map((message) => message.id).filter(Boolean))), activeChildCount = computed(() => activeNodeId.value ? tree.value.filter((node) => node.parent_id === activeNodeId.value).length : 0);
 const filteredConversations = computed(() => { const query = conversationFilter.value.trim().toLowerCase(); return query ? conversations.value.filter((item) => item.title.toLowerCase().includes(query)) : conversations.value; });
 const selectedCard = computed(() => cards.value.find((card) => card.id === selected.value?.card_id));
@@ -82,23 +93,14 @@ const composerPlaceholder = computed(() => !selected.value ? "先选择一个会
 const canSend = computed(() => Boolean(selected.value && draft.value.trim() && !sending.value && !profilesLoading.value));
 const draftPercent = computed(() => Math.round((draft.value.length / 12000) * 100));
 const draftCountClass = computed(() => draftPercent.value >= 100 ? "is-limit" : draftPercent.value >= 90 ? "is-warning" : "");
-const estimateTokens = computed(() => selected.value?.tokens || messages.value.reduce((total, item) => total + Math.ceil((item.content || "").length / 2), 0));
+const estimateTokens = computed(() => budgetUsage.value?.input_tokens || selected.value?.tokens || 0);
 const activeModel = computed(() => profiles.value.find((profile) => profile.id === selectedProfileId.value) || profiles.value.find((profile) => profile.active) || model.value);
 const activeModelLabel = computed(() => activeModel.value ? `${activeModel.value.name || activeModel.value.model} · ${activeModel.value.model}` : "未配置模型");
 const modelMenuName = computed(() => profilesLoading.value ? "正在加载模型…" : activeModel.value ? (activeModel.value.name || activeModel.value.model) : "未配置模型");
-const CONTEXT_BUDGET = 32000;
-const contextPercent = computed(() => Math.min(100, Math.max(2, Math.round((estimateTokens.value / CONTEXT_BUDGET) * 100))));
-const contextLevel = computed(() => { const percent = (estimateTokens.value / CONTEXT_BUDGET) * 100; return percent >= 85 ? "is-high" : percent >= 60 ? "is-mid" : "is-low"; });
+const contextPercent = computed(() => Math.min(100, Math.max(2, Math.round((estimateTokens.value / (budgetUsage.value?.available_input || 32768)) * 100))));
+const contextLevel = computed(() => contextPercent.value >= 80 ? "is-high" : contextPercent.value >= 60 ? "is-mid" : "is-low");
 const pathIds = computed(() => new Set(activePath.value));
-const timelineEntries = computed(() => {
-  const entries = [];
-  for (const node of tree.value) {
-    if (node.entry_type === "compaction" || node.entry_type === "branch_summary") entries.push({ key: `marker-${node.id}`, kind: "marker", type: node.entry_type, summary: node.summary, tokens_before: node.tokens_before, label: node.label, created_at: node.created_at });
-  }
-  for (const message of messages.value) entries.push({ key: `message-${message.id || message.created_at}`, kind: "message", message });
-  if (pendingMessage.value) entries.push({ key: "pending", kind: "message", pending: true, message: pendingMessage.value });
-  return entries;
-});
+const timelineEntries = computed(() => timelineForPath(selected.value?.context || messages.value, [pendingMessage.value, pendingAssistant.value]));
 const visibleTree = computed(() => { const children = new Map(); for (const node of tree.value) { const parent = node.parent_id || "root"; if (!children.has(parent)) children.set(parent, []); children.get(parent).push(node); } const rows = []; function visit(parent, depth) { (children.get(parent) || []).forEach((node, index, list) => { rows.push({ ...node, depth, isLast: index === list.length - 1 }); visit(node.id, depth + 1); }); } visit("root", 0); return rows; });
 function nodeText(node) { const content = node.content || node.summary; return (content || "").replace(/\s+/g, " ").slice(0, 30) || "空消息"; }
 function nodeKind(node) { return node.entry_type === "compaction" ? "压" : node.entry_type === "branch_summary" ? "分" : node.role === "user" ? "我" : "AI"; }
@@ -115,7 +117,64 @@ function selectBranch(command) { selectNode(command === "__root__" ? null : comm
 async function changeModel(profileId) { if (!selected.value || !profileId || profileId === selectedProfileId.value) return; const previousProfileId = selectedProfileId.value; try { const result = await api.patch(`/conversations/${selected.value.id}`, { profile_id: profileId }); selected.value.profile_id = result.profile_id || profileId; selectedProfileId.value = result.profile_id || profileId; ElMessage.success(`已切换到 ${profileLabel(profiles.value.find((profile) => profile.id === profileId) || {})}`); } catch (err) { selectedProfileId.value = previousProfileId; report(err); } }
 async function goSettings() { await router.push("/settings"); }
 async function create() { if (creating.value) return; creating.value = true; try { const item = await api.post("/conversations", { title: newTitle.value.trim() || "新会话", card_id: newCard.value || null, profile_id: newProfile.value || null }); await refresh(); showCreate.value = false; newTitle.value = ""; newCard.value = ""; await select(item.id); } catch (err) { report(err); } finally { creating.value = false; } }
-async function send() { if (!selected.value || !draft.value.trim() || sending.value) return; const message = draft.value.trim(), id = selected.value.id, parentId = activeNodeId.value; sending.value = true; error.value = ""; pendingMessage.value = { role: "user", content: message, parent_id: parentId }; draft.value = ""; await scrollBottom(); try { const result = await api.post(`/conversations/${id}/messages`, { message, parent_id: parentId, profile_id: selectedProfileId.value || null }); messages.value = result.messages || messages.value; tree.value = result.tree || tree.value; selected.value.active_leaf_id = result.active_leaf_id; await refresh(); selected.value.title = conversations.value.find((item) => item.id === id)?.title || selected.value.title; } catch (err) { draft.value = message; error.value = err.message; } finally { pendingMessage.value = null; sending.value = false; await scrollBottom(); } }
+async function send() {
+  if (!canSend.value) return;
+  lastAttempt.value = { message: draft.value.trim(), parent_id: activeNodeId.value,
+    profile_id: selectedProfileId.value || null, request_id: crypto.randomUUID() };
+  await startAttempt();
+}
+async function startAttempt() {
+  sending.value = true; error.value = ""; uncertain.value = false; actualUsage.value = null;
+  pendingMessage.value = { role: "user", content: lastAttempt.value.message };
+  pendingAssistant.value = { role: "assistant", content: "" };
+  draft.value = "";
+  await scrollBottom();
+  await generation.send(selected.value.id, lastAttempt.value);
+}
+function receiveEvent(name, data) {
+  if (name === "start") nativeStreaming.value = data.capabilities?.native_streaming;
+  if (name === "context") budgetUsage.value = data;
+  if (name === "delta" && pendingAssistant.value) { pendingAssistant.value.content += data.text; scrollBottom(); }
+  if (name === "terminal") {
+    if (data.storage_error) {
+      error.value = data.error; uncertain.value = true;
+    } else {
+      applyConversation(data);
+      actualUsage.value = Object.keys(data.usage || {}).length ? data.usage : null;
+      error.value = data.status === "completed" ? (data.mirror_warning || data.memory_warning || "") : data.error || "生成已中断";
+      if (!data.reply) draft.value = lastAttempt.value?.message || "";
+      pendingMessage.value = null; pendingAssistant.value = null;
+      refresh().catch(report);
+    }
+    sending.value = false; stopping.value = false; scrollBottom();
+  }
+  if (name === "error") {
+    uncertain.value = true; sending.value = false; stopping.value = false;
+    error.value = `${data.message}；可重连本次请求确认状态，不会自动重复调用模型`;
+    draft.value = lastAttempt.value?.message || "";
+  }
+}
+async function stop() { if (stopping.value) return; stopping.value = true; try { await generation.stop(); } catch (err) { error.value = err.message; } finally { stopping.value = false; } }
+async function retry() {
+  if (sending.value || !lastAttempt.value) return;
+  if (!uncertain.value) lastAttempt.value = { ...lastAttempt.value, request_id: crypto.randomUUID() };
+  await startAttempt();
+}
+async function preview() {
+  const epoch = ++previewEpoch, id = selected.value?.id;
+  if (!id || sending.value) return;
+  try {
+    const result = await api.post(`/conversations/${id}/context-preview`, {
+      message: draft.value, profile_id: selectedProfileId.value || null,
+    });
+    if (epoch === previewEpoch && selected.value?.id === id && !sending.value) budgetUsage.value = result.context_usage;
+  } catch (err) { if (epoch === previewEpoch && !sending.value) error.value = err.message; }
+}
+watch([draft, selectedProfileId, () => selected.value?.active_leaf_id, () => selected.value?.id], () => {
+  clearTimeout(previewTimer); previewEpoch++; previewTimer = setTimeout(preview, 350);
+});
+watch(() => selected.value?.id, () => { lastAttempt.value = null; budgetUsage.value = null; actualUsage.value = null; });
+onBeforeUnmount(() => { clearTimeout(previewTimer); previewEpoch++; generation.dispose(); });
 async function copyMessage(message) { try { await navigator.clipboard.writeText(message.content || ""); ElMessage.success("已复制消息内容"); } catch { report(new Error("复制失败，请手动选择文本")); } }
 async function labelNode(message) { let value; try { ({ value } = await ElMessageBox.prompt("节点标记（留空可清除）", "标记节点", { inputValue: message.label || "", inputPlaceholder: "例如：关键转折", confirmButtonText: "保存", cancelButtonText: "取消" })); } catch { return; } try { await api.put(`/conversations/${selected.value.id}/nodes/${message.id}/label`, { label: value }); const target = messages.value.find((item) => item.id === message.id); if (target) target.label = (value || "").trim() || null; const treeNode = tree.value.find((item) => item.id === message.id); if (treeNode) treeNode.label = (value || "").trim() || null; } catch (err) { report(err); } }
 async function rename(item) { let value; try { ({ value } = await ElMessageBox.prompt("会话标题", "重命名", { inputValue: item.title, inputPattern: /^.{1,100}$/, inputErrorMessage: "请输入 1 到 100 个字符", confirmButtonText: "保存", cancelButtonText: "取消" })); } catch { return; } try { await api.patch(`/conversations/${item.id}`, { title: value }); await refresh(); if (selected.value?.id === item.id) selected.value.title = value; } catch (err) { report(err); } }

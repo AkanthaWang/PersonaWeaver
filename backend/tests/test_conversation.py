@@ -22,6 +22,12 @@ def chat_client(tmp_path, monkeypatch):
         return "摘要" if len(messages) == 1 else "回答：" + messages[-1]["content"][:10]
 
     monkeypatch.setattr(llm, "chat", reply)
+    from backend.app.ai.providers import conversation_stream
+
+    async def stream(settings, messages, json_mode=False):
+        yield {"text": reply(settings, messages)}
+
+    monkeypatch.setattr(conversation_stream, "stream", stream)
     app = create_app(Config(data_dir=tmp_path, database_path=tmp_path / "test.sqlite3"))
     with TestClient(app) as client:
         client.get("/api/v1/auth/me").raise_for_status()

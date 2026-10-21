@@ -30,6 +30,8 @@ class SettingsService:
         active = self.repo.active_profile_for_user(user_id)
         if active:
             self.repo.sync_active_profile(user_id, active["id"], settings)
+            self.repo.execute("UPDATE model_profiles SET context_window=? WHERE id=?",
+                              (settings["context_window"], active["id"]))
         return llm.public_settings(settings)
 
     def test_model(self, user_id: str):
@@ -144,6 +146,8 @@ class SettingsService:
         values["headers_json"] = json.dumps(values.pop("headers", {}), ensure_ascii=False)
         try:
             self.repo.create_profile(values)
+            self.repo.execute("UPDATE model_profiles SET context_window=? WHERE id=?",
+                              (values["context_window"], profile_id))
         except Exception as exc:
             if "UNIQUE" in str(exc).upper():
                 raise HTTPException(409, "配置名称已存在") from exc

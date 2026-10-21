@@ -13,6 +13,7 @@ class ModelSettings(BaseModel):
     top_p: float = Field(default=0.9, gt=0, le=1)
     max_tokens: int = Field(default=2048, ge=128, le=16384)
     timeout_seconds: int = Field(default=60, ge=5, le=300)
+    context_window: int = Field(default=32768, ge=512, le=2000000)
 
     @field_validator("base_url")
     @classmethod
