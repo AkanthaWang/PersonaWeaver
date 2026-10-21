@@ -523,6 +523,8 @@ class Database:
                         "INSERT OR IGNORE INTO model_profile_state(user_id,active_profile_id) VALUES (?,?)",
                         (row["user_id"], profile["id"]),
                     )
+            from backend.app.domains.conversation.migrations import initialize_conversations
+            initialize_conversations(conn)
             # Background workers cannot survive a process restart.
             active = conn.execute("SELECT id, book_id FROM tasks WHERE status IN ('pending','running')").fetchall()
             for task in active:

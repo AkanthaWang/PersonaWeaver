@@ -3,6 +3,42 @@ from __future__ import annotations
 from backend.app.ai.prompts.conversation import CARD_CONTEXT_PREFIX, CONVERSATION_GROUNDED_SYSTEM
 
 from .compaction import to_branch_context_message, to_context_message
+import json
+
+
+def metadata(entry: dict) -> dict:
+    value = entry.get("metadata")
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def effective_entries(path: list[dict]) -> list[dict]:
+    """Resolve checkpoints, preserving source ids for incremental compaction."""
+    context = []
+    for index, entry in enumerate(path):
+        kind = entry.get("entry_type") or "message"
+        if kind == "compaction":
+            summary = entry.get("summary") or entry.get("content") or ""
+            first_kept = entry.get("kept_from_node_id")
+            start = next((i for i in range(index) if path[i]["id"] == first_kept), None)
+            if start is not None:
+                tail = [item for item in path[start:index]
+                        if item.get("entry_type", "message") in {"message", "custom_message"}]
+            else:
+                tail = metadata(entry).get("retainedTail") or []
+            context = [{**entry, **to_context_message(summary)}]
+            context.extend(dict(item) for item in tail if item.get("role") in {"user", "assistant"})
+        elif kind == "branch_summary":
+            summary = entry.get("summary") or entry.get("content") or ""
+            context.append({**entry, **to_branch_context_message(summary)})
+        elif kind in {"message", "custom_message"}:
+            context.append(entry)
+    return context
 
 
 def resolve_path(path: list[dict]) -> list[dict]:
@@ -14,23 +50,8 @@ def resolve_path(path: list[dict]) -> list[dict]:
     ``session_info`` entries pass through as context/ignored respectively.
     """
 
-    context: list[dict] = []
-    for entry in path:
-        entry_type = entry.get("entry_type") or "message"
-        if entry_type == "compaction":
-            summary = entry.get("summary") or entry.get("content") or ""
-            # The compaction entry sits after the history it replaces; drop that
-            # history and inject the structured summary in its place. Entries
-            # appended after the compaction (the kept tail) flow through below.
-            context = [to_context_message(summary)]
-        elif entry_type == "branch_summary":
-            summary = entry.get("summary") or entry.get("content") or ""
-            context.append(to_branch_context_message(summary))
-        elif entry_type == "session_info":
-            continue
-        else:
-            context.append({"role": entry.get("role", "assistant"), "content": entry.get("content", "")})
-    return context
+    return [{"role": item.get("role", "assistant"), "content": item.get("content", "")}
+            for item in effective_entries(path)]
 
 
 def build_context(

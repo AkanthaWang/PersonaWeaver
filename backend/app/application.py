@@ -31,6 +31,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         uploads.mkdir(parents=True, exist_ok=True)
         avatars.mkdir(parents=True, exist_ok=True)
         db.initialize()
+        from .domains.conversation.mirror import recover_mirrors
+        recover_mirrors(db)
         yield
 
     app = FastAPI(title="PersonaWeaver Local API", version="3.0.0", lifespan=lifespan)

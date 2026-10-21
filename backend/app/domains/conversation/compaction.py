@@ -11,6 +11,7 @@ The summary format follows Pi's ``docs/compaction.md``.
 from __future__ import annotations
 
 import re
+import math
 
 from backend.app.ai.prompts.conversation import (
     BRANCH_CONTEXT_PREFIX,
@@ -40,11 +41,13 @@ SUMMARY_MAX_CHARS = 4000
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, int(len(text) / CHARS_PER_TOKEN))
+    # Unknown tokenizers: non-ASCII text must not be estimated as English.
+    ascii_count = sum(ord(char) < 128 for char in text)
+    return max(1, math.ceil(ascii_count / 3) + (len(text) - ascii_count) * 2)
 
 
 def messages_tokens(messages: list[dict]) -> int:
-    return sum(estimate_tokens(item.get("content") or "") for item in messages)
+    return 3 + sum(4 + estimate_tokens(item.get("content") or "") for item in messages)
 
 
 def extract_files(messages: list[dict]) -> dict:
@@ -78,10 +81,9 @@ def choose_cut_point(messages: list[dict], keep_recent_tokens: int = DEFAULT_KEE
         cut = index
         if accumulated >= keep_recent_tokens:
             break
-    # Snap forward to a user turn so the kept tail starts cleanly.
-    while cut < len(messages) and messages[cut].get("role") != "user":
-        cut += 1
-    return cut if cut < len(messages) else 0
+    while cut > 0 and messages[cut].get("role") != "user":
+        cut -= 1
+    return cut
 
 
 def serialize_messages(messages: list[dict]) -> str:
@@ -93,9 +95,6 @@ def serialize_messages(messages: list[dict]) -> str:
         content = (item.get("content") or "").strip()
         if not content:
             continue
-        limits = 2000
-        if len(content) > limits:
-            content = content[:limits] + f"\n…（已截断 {len(content) - limits} 字符）"
         lines.append(f"{labels.get(item.get('role'), '[Other]')}: {content}")
     return "\n\n".join(lines)
 
@@ -146,7 +145,7 @@ def to_retained_tail(messages: list[dict]) -> list[dict]:
 
     tail = []
     for item in messages:
-        tail.append({"role": item.get("role"), "content": item.get("content")})
+        tail.append({key: item[key] for key in ("id", "role", "content") if key in item})
     return tail
 
 

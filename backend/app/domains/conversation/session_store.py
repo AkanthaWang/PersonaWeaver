@@ -23,6 +23,7 @@ from pathlib import Path
 import json
 import os
 import re
+import tempfile
 
 
 SESSION_VERSION = 3
@@ -93,6 +94,7 @@ class SessionStore:
             self._append_line(path, entry)
 
     def read(self, path: Path) -> list[dict]:
+        path = Path(path)
         if not path.exists():
             return []
         entries = []
@@ -103,6 +105,23 @@ class SessionStore:
                     continue
                 entries.append(json.loads(line))
         return entries
+
+    def rebuild(self, path: Path, session_id: str, stamp: str, entries: list[dict]):
+        """Atomically replace a derived mirror; a partial append is never canonical."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".session-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                header = {"type": "session", "version": SESSION_VERSION,
+                          "id": session_id, "timestamp": stamp, "cwd": self.cwd}
+                for entry in [header, *entries]:
+                    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def fork(self, source: Path, session_id: str, stamp: str, target_cwd: str | None = None) -> Path:
         """Copy an existing session file into a new session (Pi ``/clone``)."""

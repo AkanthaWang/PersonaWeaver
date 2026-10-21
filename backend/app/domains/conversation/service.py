@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from threading import Lock
+from functools import wraps
 
 from fastapi import HTTPException
 
@@ -10,7 +11,8 @@ from backend.app.domains.settings import llm
 from backend.app.domains.settings.repository import SettingsRepository
 
 from . import compaction
-from .memory_context import build_context
+from .memory_context import build_context, effective_entries, metadata, resolve_path
+from .mirror import sync_mirror
 from .repository import ConversationRepository
 from .session_store import SessionStore
 
@@ -29,6 +31,14 @@ def _conversation_lock(conversation_id: str):
     finally:
         with _busy_lock:
             _busy.discard(conversation_id)
+
+
+def locked(method):
+    @wraps(method)
+    def run(self, user_id, conversation_id, *args, **kwargs):
+        with _conversation_lock(conversation_id):
+            return method(self, user_id, conversation_id, *args, **kwargs)
+    return run
 
 
 class ConversationService:
@@ -60,7 +70,6 @@ class ConversationService:
         if path:
             return self._session_path(path)
         target = self.store.path_for(conversation_id, row["created_at"])
-        self.store.ensure_header(target, conversation_id, row["created_at"])
         self.repo.set_session_file(conversation_id, str(target), now())
         row["session_file"] = str(target)
         return target
@@ -88,7 +97,7 @@ class ConversationService:
             "messages": [entry for entry in path if entry.get("entry_type") in {"message", "custom_message"}],
             "context": _public_path(path),
             "tree": _public_tree(self.repo.tree(conversation_id)),
-            "tokens": compaction.messages_tokens([{"content": entry.get("content")} for entry in path]),
+            "tokens": compaction.messages_tokens(resolve_path(path)),
         }
 
     def create(self, user_id: str, payload):
@@ -101,8 +110,10 @@ class ConversationService:
         )
         row = self.get_owned(user_id, conversation_id)
         self._ensure_session_file(row)
+        sync_mirror(self.db, conversation_id)
         return self.get_owned(user_id, conversation_id)
 
+    @locked
     def rename(self, user_id: str, conversation_id: str, payload):
         row = self.get_owned(user_id, conversation_id)
         stamp = now()
@@ -119,16 +130,17 @@ class ConversationService:
         row = self.get_owned(user_id, conversation_id)
         with _conversation_lock(conversation_id):
             self.repo.delete(conversation_id)
-            if row.get("session_file"):
-                self._session_path(row["session_file"]).unlink(missing_ok=True)
+            sync_mirror(self.db, conversation_id)
         return {"ok": True}
 
     def clear(self, user_id: str, conversation_id: str):
         self.get_owned(user_id, conversation_id)
         with _conversation_lock(conversation_id):
             self.repo.clear_messages(conversation_id, now())
+            sync_mirror(self.db, conversation_id)
         return {"ok": True}
 
+    @locked
     def fork(self, user_id: str, conversation_id: str):
         """Copy the active branch into a brand new conversation (Pi ``/clone``)."""
 
@@ -156,13 +168,14 @@ class ConversationService:
                     "created_at": entry.get("created_at") or stamp,
                 }
             )
-            self.store.append(path, _jsonl_message(node_id, parent, entry, new_id, new_row["created_at"]))
             parent = node_id
         if parent:
             self.repo.set_active_leaf(new_id, parent, now())
+        sync_mirror(self.db, new_id)
         return self.get_owned(user_id, new_id)
 
     # ------------------------------------------------------------------ tree
+    @locked
     def set_active_node(self, user_id: str, conversation_id: str, payload):
         row = self.get_owned(user_id, conversation_id)
         if payload.node_id and not self.repo.node(conversation_id, payload.node_id):
@@ -172,12 +185,14 @@ class ConversationService:
         summary = None
         if payload.summary and previous_leaf and previous_leaf != payload.node_id:
             summary = self._summarize_abandoned_branch(row, previous_leaf, payload.node_id, payload.summary_prompt, stamp)
-        self.repo.set_active_leaf(conversation_id, payload.node_id, stamp)
+        self.repo.set_active_leaf(conversation_id, summary["id"] if summary else payload.node_id, stamp)
+        sync_mirror(self.db, conversation_id)
         result = self.get(user_id, conversation_id)
         if summary:
             result["branch_summary"] = summary
         return result
 
+    @locked
     def set_label(self, user_id: str, conversation_id: str, node_id: str, label):
         self.get_owned(user_id, conversation_id)
         node = self.repo.node(conversation_id, node_id)
@@ -185,6 +200,7 @@ class ConversationService:
             raise HTTPException(404, "消息节点不存在")
         cleaned = (label or "").strip() or None
         self.repo.set_label(conversation_id, node_id, cleaned)
+        sync_mirror(self.db, conversation_id)
         return {"ok": True, "node_id": node_id, "label": cleaned}
 
     # ------------------------------------------------------------------ sending
@@ -194,6 +210,8 @@ class ConversationService:
         if parent_id and not self.repo.node(conversation_id, parent_id):
             raise HTTPException(404, "父消息节点不存在")
         with _conversation_lock(conversation_id):
+            row = self.get_owned(user_id, conversation_id)
+            parent_id = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
             path = self.repo.path(conversation_id, parent_id)
             system = payload.system_prompt or user_prompt or CONVERSATION_GROUNDED_SYSTEM
             card_content = ""
@@ -218,19 +236,21 @@ class ConversationService:
                           "usage": {"output": compaction.estimate_tokens(reply)}},
             )
             self._mirror_exchange(row, parent_id, user_node_id, assistant_node_id, payload.message, reply, stamp, settings)
+        result = self.get(user_id, conversation_id)
         return {
+            **result,
             "response": reply,
             "active_leaf_id": assistant_node_id,
-            "messages": self.get(user_id, conversation_id)["messages"],
-            "tree": self.get(user_id, conversation_id)["tree"],
         }
 
     # ------------------------------------------------------------------ compaction
     def compact(self, user_id: str, conversation_id: str, payload):
         row = self.get_owned(user_id, conversation_id)
         with _conversation_lock(conversation_id):
+            row = self.get_owned(user_id, conversation_id)
             entries = self.repo.path(conversation_id, row.get("active_leaf_id"))
-            messages = [entry for entry in entries if entry.get("entry_type") == "message"]
+            messages = [entry for entry in effective_entries(entries)
+                        if entry.get("entry_type") != "compaction"]
             if len(messages) < 3:
                 raise HTTPException(400, "对话内容过少，无需压缩")
             tokens_before = compaction.messages_tokens(messages)
@@ -257,7 +277,7 @@ class ConversationService:
             node_id = identifier("compaction")
             parent = row.get("active_leaf_id")
             kept_from = kept[0]["id"] if kept else None
-            retained_tail = compaction.to_retained_tail([{"role": item["role"], "content": item["content"]} for item in kept])
+            retained_tail = compaction.to_retained_tail(kept)
             self.repo.append_compaction(
                 conversation_id, node_id, parent, summary, tokens_before, kept_from, retained_tail, stamp,
             )
@@ -279,18 +299,15 @@ class ConversationService:
                 "metadata": {"name": name},
             }
         )
-        path = self._ensure_session_file(row)
-        self.store.append(path, {"type": "session_info", "id": node_id, "parentId": row.get("active_leaf_id"),
-                                 "timestamp": stamp, "name": name})
+        sync_mirror(self.db, row["id"])
 
-    def _summarize_abandoned_branch(self, row, previous_leaf, target_id, enabled, instructions, stamp):
+    def _summarize_abandoned_branch(self, row, previous_leaf, target_id, instructions, stamp):
         entries = self.repo.path(row["id"], previous_leaf)
         ancestor = _common_ancestor(entries, self.repo.path(row["id"], target_id))
-        abandoned = [entry for entry in entries if entry.get("entry_type") == "message"]
+        start = 0
         if ancestor is not None:
-            index = next((i for i, entry in enumerate(abandoned) if entry["id"] == ancestor), None)
-            if index is not None:
-                abandoned = abandoned[index + 1:]
+            start = next(i for i, entry in enumerate(entries) if entry["id"] == ancestor) + 1
+        abandoned = resolve_path(entries[start:])
         if not abandoned:
             return None
         profile_id = row.get("profile_id")
@@ -307,38 +324,13 @@ class ConversationService:
             raise HTTPException(502, llm.error_message(exc)) from exc
         node_id = identifier("branch")
         self.repo.append_branch_summary(row["id"], node_id, target_id, summary, previous_leaf, stamp)
-        path = self._ensure_session_file(row)
-        self.store.append(path, {"type": "branch_summary", "id": node_id, "parentId": target_id,
-                                 "timestamp": stamp, "summary": summary, "fromId": previous_leaf})
         return {"id": node_id, "summary": summary}
 
     def _mirror_exchange(self, row, parent_id, user_node_id, assistant_node_id, message, reply, stamp, settings):
-        path = self._ensure_session_file(row)
-        session_id = row["id"]
-        self.store.append(path, _jsonl_message(user_node_id, parent_id, {"role": "user", "content": message}, session_id, stamp))
-        self.store.append(path, {
-            "type": "message", "id": assistant_node_id, "parentId": user_node_id, "timestamp": stamp,
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": reply}],
-                "provider": settings.get("provider"),
-                "model": settings.get("model"),
-                "stopReason": "stop",
-            },
-        })
+        return sync_mirror(self.db, row["id"])
 
     def _mirror_compaction(self, row, node_id, parent, summary, tokens_before, kept_from, retained_tail, stamp, settings):
-        path = self._ensure_session_file(row)
-        entry = {
-            "type": "compaction", "id": node_id, "parentId": parent, "timestamp": stamp,
-            "summary": summary, "tokensBefore": tokens_before,
-        }
-        if kept_from:
-            entry["firstKeptEntryId"] = kept_from
-        if retained_tail:
-            entry["retainedTail"] = retained_tail
-        entry["model"] = settings.get("model")
-        self.store.append(path, entry)
+        return sync_mirror(self.db, row["id"])
 
 
 def _public_path(path: list[dict]) -> list[dict]:
@@ -358,6 +350,7 @@ def _public_entry(entry: dict) -> dict:
         "content": entry.get("content"),
         "created_at": entry.get("created_at"),
         "label": entry.get("label"),
+        "metadata": metadata(entry),
     }
     if entry.get("summary"):
         item["summary"] = entry["summary"]
