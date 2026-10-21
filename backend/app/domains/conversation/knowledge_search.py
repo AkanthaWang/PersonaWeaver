@@ -53,9 +53,10 @@ def _rows(conn, table):
 def documents(conn, book_id):
     chapters = {row["id"]: row for row in _rows(conn, "chapters") if row["book_id"] == book_id}
     evidence = {row["id"]: row for row in _rows(conn, "knowledge_evidence") if row["book_id"] == book_id}
-    pending = {row["entity_id"] for row in _rows(conn, "knowledge_reviews") if row["state"] == "pending"}
+    pending = {row["entity_id"] for row in _rows(conn, "knowledge_reviews")
+               if row["book_id"] == book_id and row["state"] == "pending"}
     characters = {row["id"]: row for row in _rows(conn, "knowledge_characters")
-                  if row["state"] == "active" and not row["deleted_at"] and not row["merged_into_id"]
+                  if row["book_id"] == book_id and row["state"] == "active" and not row["deleted_at"] and not row["merged_into_id"]
                   and row["id"] not in pending}
     all_characters = {row["id"] for row in _rows(conn, "knowledge_characters")}
 
@@ -96,6 +97,9 @@ def documents(conn, book_id):
         for row in (facts if kind == "fact" else _rows(conn, table)):
             if row["book_id"] != book_id or row["state"] != "active" or row["deleted_at"] or row["id"] in pending:
                 continue
+            ev = evidence.get(row.get("evidence_id"))
+            if ev and ev["source_type"] in {"hypothesis", "candidate", "inference"}:
+                continue
             if kind == "fact":
                 if row["id"] in superseded or row["source_type"] in {"hypothesis", "candidate", "inference"}:
                     continue
@@ -120,6 +124,11 @@ def documents(conn, book_id):
 def ensure_index(db, book_id):
     with db.connect() as conn:
         state = dict(conn.execute("SELECT * FROM chat_index_state WHERE id=1").fetchone())
+        counts = [conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                  for table in ("chat_documents", "chat_fts")]
+        if counts[0] != counts[1]:
+            conn.execute("DELETE FROM chat_fts")
+            state["version"] = ""
         if state["revision"] == state["indexed_revision"] and state["version"] == INDEX_VERSION:
             return state["revision"]
         existing = {row["id"]: row["fingerprint"] for row in conn.execute("SELECT id,fingerprint FROM chat_documents")}
@@ -148,8 +157,19 @@ def retrieve(database, user_id, book_id, query, limit=12):
     if not database.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
         raise HTTPException(404, "关联作品不存在")
     db = database.book_database(book_id)
-    revision = ensure_index(db, book_id)
-    tokens = terms(query)[:64]
+    try:
+        revision = ensure_index(db, book_id)
+    except sqlite3.DatabaseError as exc:
+        if "fts" not in str(exc).lower() and "malformed" not in str(exc).lower():
+            raise
+        rebuild_index(db, book_id)
+        revision = ensure_index(db, book_id)
+    expanded = query
+    for row in db.all("SELECT payload FROM chat_documents WHERE id LIKE 'character:%'"):
+        character = json.loads(row["payload"])
+        if any(name.casefold() in query.casefold() for name in [character["title"], *character["aliases"]] if name):
+            expanded += " " + character["title"]
+    tokens = terms(expanded)[:64]
     if not tokens:
         return []
     match = " OR ".join('"' + token + '"' for token in tokens)
@@ -166,3 +186,13 @@ def retrieve(database, user_id, book_id, query, limit=12):
             f"\n第{item['chapter_no']}章引文：{item['quote']}" if item.get("quote") and item["kind"] != "chapter" else "")
         candidates.append((not exact, row["rank"], item))
     return [item for _, _, item in sorted(candidates, key=lambda v: (v[0], v[1]))[:limit]]
+
+
+def rebuild_index(db, book_id):
+    """Rebuild derived tables only; raw chapters and knowledge are never changed."""
+    with db.connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS chat_fts")
+        conn.execute("CREATE VIRTUAL TABLE chat_fts USING fts5(id UNINDEXED,tokens)")
+        conn.execute("DELETE FROM chat_documents")
+        conn.execute("UPDATE chat_index_state SET indexed_revision=-1,version='' WHERE id=1")
+    ensure_index(db, book_id)

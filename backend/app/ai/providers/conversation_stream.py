@@ -1,6 +1,7 @@
 """Cancellable, asynchronous conversation transports; extraction stays synchronous."""
 
 import json
+import uuid
 
 import httpx
 
@@ -95,7 +96,8 @@ async def stream(settings, messages, json_mode=False):
     timeout = httpx.Timeout(float(settings.get("timeout_seconds") or 60), connect=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
         if not caps["native_streaming"]:
-            response = await client.post(url, headers=headers, json=body)
+            response = await client.post(url, headers=headers, json=body,
+                                         params={"request_id": str(uuid.uuid4())} if protocol == "vivo" else None)
             response.raise_for_status()
             result = response.json()
             if protocol == "vivo":
@@ -149,6 +151,8 @@ async def stream(settings, messages, json_mode=False):
                             if isinstance(text, str) and text:
                                 yield {"text": text}
                             if choice.get("finish_reason") is not None:
+                                if choice["finish_reason"] not in {"stop"}:
+                                    raise ValueError("模型因输出限制或过滤而中断")
                                 finished = True
                         if item.get("usage"):
                             yield {"usage": item["usage"]}

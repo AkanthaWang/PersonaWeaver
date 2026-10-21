@@ -37,6 +37,10 @@ def error_diagnostics(exc):
 
 
 def load_settings(db, user_id):
+    active = db.one("SELECT p.* FROM model_profiles p JOIN model_profile_state s ON s.active_profile_id=p.id "
+                    "WHERE s.user_id=?", (user_id,))
+    if active:
+        return settings_from_profile(active)
     row = db.one("SELECT * FROM model_settings WHERE user_id=?", (user_id,))
     if row:
         return {key: value for key, value in row.items() if key != "user_id"}

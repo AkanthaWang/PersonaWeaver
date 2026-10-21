@@ -56,6 +56,7 @@ class LabelRequest(BaseModel):
 
 class ContextPreview(BaseModel):
     message: str = Field(default="", max_length=12000)
+    system_prompt: str = Field(default="", max_length=12000)
     profile_id: Optional[str] = None
     parent_id: Optional[str] = None
 

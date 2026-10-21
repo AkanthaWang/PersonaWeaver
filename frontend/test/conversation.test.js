@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readEventStream, timelineForPath, GenerationSession } from "../src/domains/conversation/stream.js";
+import { readEventStream, timelineForPath, GenerationSession, usageLabel } from "../src/domains/conversation/stream.js";
 
 function body(text, size = 1) {
   const bytes = new TextEncoder().encode(text);
@@ -55,4 +55,20 @@ test("network failure queries status instead of calling the model again", async 
   await session.send("a", { request_id: "id" });
   assert.equal(requests, 1); assert.equal(cancels, 1);
   assert.equal(events.at(-1)[1].reply, "保存部分");
+});
+test("409 is an explicit parameter error, not a replay of the old request", async () => {
+  const events = [];
+  const session = new GenerationSession({
+    api: { defaults: { baseURL: "/api/v1" }, get: async () => assert.fail("must not replay conflicting request") },
+    fetchImpl: async () => ({ ok: false, status: 409, json: async () => ({ detail: "参数冲突" }) }),
+    onEvent: (...args) => events.push(args),
+  });
+  await session.send("a", { request_id: "id" });
+  assert.equal(events[0][0], "error");
+  assert.equal(events[0][1].uncertain, false);
+});
+test("provider usage is distinct from estimates and supports protocol-specific fields", () => {
+  assert.equal(usageLabel({ input_tokens: 12, output_tokens: 0 }), "输入 12 · 输出 0 tokens");
+  assert.equal(usageLabel({ prompt_eval_count: 25, eval_count: 8 }), "输入 25 · 输出 8 tokens");
+  assert.equal(usageLabel({ unknown: 7 }), "已记录");
 });

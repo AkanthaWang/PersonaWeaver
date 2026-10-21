@@ -15,7 +15,9 @@ class KnowledgeRepository:
 
     def record_change(self, db, book_id, entity_type, entity_id, operation, before, after, reason, operator_id):
         db.execute(
-            "INSERT INTO knowledge_changes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO knowledge_changes"
+            "(id,book_id,entity_type,entity_id,operation,before_json,after_json,reason,operator_type,operator_id,batch_id,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (identifier("change"), book_id, entity_type, entity_id, operation,
              json.dumps(before, ensure_ascii=False) if before else None,
              json.dumps(after, ensure_ascii=False) if after else None,

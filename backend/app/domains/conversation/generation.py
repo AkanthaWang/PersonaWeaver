@@ -37,6 +37,7 @@ class LiveRun:
     task: asyncio.Task | None = None
     terminal: bool = False
     cancel_reason: str = "cancelled"
+    started: bool = False
 
     async def emit(self, name, data):
         async with self.changed:
@@ -49,7 +50,8 @@ class GenerationEngine:
         self.db = db
         self.service = ConversationService(db)
         self.live = {}
-        self.memory = None
+        from .memories import BranchMemory
+        self.memory = BranchMemory(db)
 
     def get_run(self, user_id, cid, rid):
         self.service.get_owned(user_id, cid)
@@ -61,15 +63,22 @@ class GenerationEngine:
     def public(self, user_id, cid, rid):
         run = self.get_run(user_id, cid, rid)
         return {k: run[k] for k in (
-            "request_id", "status", "reply", "user_node_id", "assistant_node_id", "error", "updated_at"
+            "request_id", "status", "reply", "user_node_id", "assistant_node_id", "error", "updated_at", "cleared"
         )} | {k: json.loads(run[k]) for k in ("usage", "context_usage", "sources")}
 
     def optional_context(self, user_id, row, path, message):
         result = {}
         if row.get("book_id") and row.get("knowledge_enabled"):
             from .knowledge_search import retrieve
-            result["knowledge"] = retrieve(self.db, user_id, row["book_id"], message)
-        if self.memory and row.get("memory_enabled"):
+            query = message
+            if row.get("card_id"):
+                query += " " + self.service.characters.owned(user_id, row["card_id"])["name"]
+            if len(message) < 16:
+                recent = next((n["content"] for n in reversed(path)
+                               if n.get("entry_type") == "message" and n.get("role") == "user"), "")
+                query += " " + recent[:500]
+            result["knowledge"] = retrieve(self.db, user_id, row["book_id"], query)
+        if self.memory:
             result["memory"] = self.memory.context(row["id"], path)
         return result
 
@@ -96,17 +105,20 @@ class GenerationEngine:
         fingerprint = hashlib.sha256(dump(inputs).encode()).hexdigest()
         existing = self.db.one("SELECT * FROM conversation_runs WHERE conversation_id=? AND request_id=?", (cid, rid))
         if existing:
+            if existing["cleared"]:
+                raise HTTPException(409, "历史已清空，旧请求不可重放；重新生成请使用新的 request_id")
             if existing["fingerprint"] != fingerprint:
                 raise HTTPException(409, "request_id 已用于不同参数；重新生成请使用新的 ID")
             return self.live.get((cid, rid)) or await self.replay(user_id, existing)
         guard = _conversation_lock(cid)
         guard.__enter__()
+        live = None
         try:
             row = self.service.get_owned(user_id, cid)
             parent = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
             if parent and not self.service.repo.node(cid, parent):
                 raise HTTPException(404, "父消息节点不存在")
-            prepared = self.prepare(user_id, row, payload, parent, user_prompt)
+            prepared = await asyncio.to_thread(self.prepare, user_id, row, payload, parent, user_prompt)
             stamp = now()
             self.db.execute(
                 "INSERT INTO conversation_runs(conversation_id,request_id,fingerprint,status,parent_id,message,"
@@ -123,10 +135,26 @@ class GenerationEngine:
             await asyncio.sleep(0)
             return live
         except BaseException:
-            guard.__exit__(None, None, None)
+            if live and live.task:
+                live.cancel_reason = "interrupted"
+                live.task.cancel()
+                if live.started:
+                    await asyncio.shield(live.task)
+                else:
+                    self.live.pop((cid, rid), None)
+                    guard.__exit__(None, None, None)
+            else:
+                guard.__exit__(None, None, None)
             raise
 
     async def replay(self, user_id, run):
+        if run["status"] == "running":
+            with _conversation_lock(run["conversation_id"]):
+                self.finalize(user_id, run["conversation_id"], run["request_id"], run["reply"],
+                              "interrupted", "生成任务已退出，恢复已保存文本；不会自动调用模型",
+                              json.loads(run["usage"]))
+                sync_mirror(self.db, run["conversation_id"])
+            run = self.get_run(user_id, run["conversation_id"], run["request_id"])
         live = LiveRun(run["conversation_id"], run["request_id"])
         await live.emit("start", {"request_id": run["request_id"], "replayed": True,
                                 "capabilities": provider.capability(json.loads(run["model_snapshot"]))})
@@ -199,10 +227,12 @@ class GenerationEngine:
         return prepared
 
     async def run(self, live, guard, user_id, row, payload, prepared, user_prompt):
+        live.started = True
         cid, rid = live.conversation_id, live.request_id
         reply, usage, error, status = "", {}, None, "completed"
-        parent = self.get_run(user_id, cid, rid)["parent_id"]
+        parent = None
         try:
+            parent = self.get_run(user_id, cid, rid)["parent_id"]
             if prepared["context_usage"]["needs_compaction"]:
                 # Compaction must follow the requested branch, not an unrelated active leaf.
                 row["active_leaf_id"] = parent
@@ -225,12 +255,16 @@ class GenerationEngine:
                     await live.emit("delta", {"text": event["text"]})
                 if event.get("usage"):
                     usage = event["usage"]
+                    self.db.execute(
+                        "UPDATE conversation_runs SET usage=?,updated_at=? WHERE conversation_id=? AND request_id=?",
+                        (dump(usage), now(), cid, rid),
+                    )
             if not reply.strip():
                 raise ValueError("模型返回空回复")
         except asyncio.CancelledError:
             status, error = live.cancel_reason, "生成已停止" if live.cancel_reason == "cancelled" else "连接中断"
         except Exception as exc:
-            status = "interrupted" if reply else "failed"
+            status = "interrupted" if reply.strip() else "failed"
             error = str(exc.detail) if isinstance(exc, HTTPException) else llm.error_message(exc)
             logger.warning("Conversation generation stopped: %s", type(exc).__name__)
         try:
@@ -264,20 +298,24 @@ class GenerationEngine:
         stamp = now()
         if reply.strip():
             row = self.service.get_owned(user_id, cid)
+            model = json.loads(run["model_snapshot"])
             self.service.repo.append_exchange(
                 cid, parent if parent is not None else run["parent_id"], identifier("message"), identifier("message"),
                 run["message"], reply, run["message"][:30] if row["title"] == "新会话" else row["title"], stamp,
                 metadata={"status": status, "request_id": rid, "usage": usage,
+                          "provider": model.get("provider"), "model": model.get("model"),
                           "sources": json.loads(run["sources"]), "context_usage": json.loads(run["context_usage"])},
-                run_update={"request_id": rid, "status": status, "error": error, "usage": usage},
+                run_update={"request_id": rid, "status": status, "error": error, "usage": usage,
+                            "memory_enabled": bool(row.get("memory_enabled"))},
             )
         else:
             self.db.execute(
-                "UPDATE conversation_runs SET status=?,error=?,usage=?,updated_at=? WHERE conversation_id=? AND request_id=?",
+                "UPDATE conversation_runs SET status=?,reply='',error=?,usage=?,updated_at=? WHERE conversation_id=? AND request_id=?",
                 (status, error, dump(usage), stamp, cid, rid),
             )
 
     def recover(self):
+        self.memory.recover()
         for run in self.db.all("SELECT r.*,c.user_id FROM conversation_runs r JOIN conversations c "
                                "ON c.id=r.conversation_id WHERE r.status='running'"):
             self.finalize(run["user_id"], run["conversation_id"], run["request_id"], run["reply"],
@@ -285,12 +323,17 @@ class GenerationEngine:
             sync_mirror(self.db, run["conversation_id"])
 
     async def cancel(self, user_id, cid, rid, reason="cancelled"):
-        self.get_run(user_id, cid, rid)
+        run = self.get_run(user_id, cid, rid)
         live = self.live.get((cid, rid))
-        if live and live.task and not live.task.done():
+        if run["status"] == "running" and live and live.task and not live.task.done():
             live.cancel_reason = reason
             live.task.cancel()
             await asyncio.shield(live.task)
+        elif run["status"] == "running":
+            with _conversation_lock(cid):
+                self.finalize(user_id, cid, rid, run["reply"], "interrupted",
+                              "任务已退出，恢复已保存的文本", json.loads(run["usage"]))
+                sync_mirror(self.db, cid)
         return self.result(user_id, cid, rid)
 
     async def events(self, live):
@@ -309,7 +352,7 @@ class GenerationEngine:
                 try:
                     async with live.changed:
                         await asyncio.wait_for(live.changed.wait(), timeout=5)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
         finally:
             if not live.terminal and live.task and not live.task.done():
@@ -329,3 +372,4 @@ class GenerationEngine:
                 tasks.append(live.task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self.memory.shutdown()

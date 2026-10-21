@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from threading import Lock
 from functools import wraps
+import json
 
 from fastapi import HTTPException
 
@@ -171,31 +172,48 @@ class ConversationService:
 
         row = self.get_owned(user_id, conversation_id)
         entries = self.repo.path(conversation_id, row.get("active_leaf_id"))
-        messages = [entry for entry in entries if entry.get("entry_type") == "message"]
-        if not messages:
+        if not any(entry.get("entry_type") == "message" for entry in entries):
             raise HTTPException(400, "当前会话没有可复制的消息")
         new_id, stamp = identifier("conversation"), now()
         title = (row["title"] or "会话") + " 副本"
-        self.repo.create((new_id, user_id, title, row["card_id"], row["profile_id"], None, None, self.store.cwd, stamp, stamp))
-        new_row = self.get_owned(user_id, new_id)
-        path = self._ensure_session_file(new_row)
-        parent = None
-        for entry in messages:
-            node_id = identifier("message")
-            self.repo.append_entry(
-                {
-                    "id": node_id,
-                    "conversation_id": new_id,
-                    "parent_id": parent,
-                    "entry_type": "message",
-                    "role": entry["role"],
-                    "content": entry["content"],
-                    "created_at": entry.get("created_at") or stamp,
-                }
+        ids = {entry["id"]: identifier("node") for entry in entries}
+        versions = self.db.all("SELECT * FROM conversation_memory_versions WHERE conversation_id=? ORDER BY seq", (conversation_id,))
+        versions = [v for v in versions if v["anchor_id"] in ids]
+        version_ids = {v["id"]: identifier("memory_version") for v in versions}
+        memory_ids = {v["memory_id"]: identifier("memory") for v in versions}
+        with self.db.connect() as conn:
+            conn.execute(
+                "INSERT INTO conversations(id,user_id,title,card_id,profile_id,active_leaf_id,session_cwd,"
+                "created_at,updated_at,book_id,mode,knowledge_enabled,memory_enabled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (new_id, user_id, title, row["card_id"], row["profile_id"], ids.get(row["active_leaf_id"]),
+                 self.store.cwd, stamp, stamp, row["book_id"], row["mode"], row["knowledge_enabled"], row["memory_enabled"]),
             )
-            parent = node_id
-        if parent:
-            self.repo.set_active_leaf(new_id, parent, now())
+            for entry in entries:
+                meta = metadata(entry).copy()
+                for tail in meta.get("retainedTail") or []:
+                    if tail.get("id"):
+                        tail["id"] = ids.get(tail["id"])
+                if meta.get("fromId"):
+                    meta["fromId"] = ids.get(meta["fromId"])
+                meta.pop("request_id", None)
+                conn.execute(
+                    "INSERT INTO messages(node_id,conversation_id,parent_id,entry_type,role,content,created_at,"
+                    "summary,tokens_before,kept_from_node_id,label,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ids[entry["id"]], new_id, ids.get(entry["parent_id"]), entry["entry_type"], entry["role"],
+                     entry["content"], entry["created_at"], entry["summary"], entry["tokens_before"],
+                     ids.get(entry["kept_from_node_id"]), entry["label"], json.dumps(meta, ensure_ascii=False)),
+                )
+            for v in versions:
+                conn.execute(
+                    "INSERT INTO conversation_memory_versions(id,conversation_id,memory_id,anchor_id,category,memory_key,"
+                    "content,deleted,locked,source_ids,origin,supersedes_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (version_ids[v["id"]], new_id, memory_ids[v["memory_id"]], ids[v["anchor_id"]], v["category"],
+                     v["memory_key"], v["content"], v["deleted"], v["locked"],
+                     json.dumps([ids[i] for i in json.loads(v["source_ids"]) if i in ids]), v["origin"],
+                     version_ids.get(v["supersedes_id"]), v["created_at"]),
+                )
+        new_row = self.get_owned(user_id, new_id)
+        self._ensure_session_file(new_row)
         sync_mirror(self.db, new_id)
         return self.get_owned(user_id, new_id)
 

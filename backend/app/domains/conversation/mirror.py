@@ -41,7 +41,9 @@ def sync_mirror(db, conversation_id):
                     entry["label"] = node["label"]
                 entries.append(entry)
             store.rebuild(path, row["id"], row["created_at"], entries)
-        db.execute("DELETE FROM conversation_mirrors WHERE conversation_id=?", (conversation_id,))
+        # Do not acknowledge mutations committed while this projection was being written.
+        db.execute("DELETE FROM conversation_mirrors WHERE conversation_id=? AND revision=?",
+                   (conversation_id, pending["revision"] if pending else -1))
         return None
     except (OSError, ValueError) as exc:
         # Never expose file paths, exception contents or credentials to the browser.
@@ -55,5 +57,6 @@ def sync_mirror(db, conversation_id):
 
 
 def recover_mirrors(db):
-    for row in db.all("SELECT conversation_id FROM conversation_mirrors"):
+    # Rebuilding also repairs truncated, corrupt or missing files not marked pending.
+    for row in db.all("SELECT conversation_id FROM conversation_mirrors UNION SELECT id AS conversation_id FROM conversations"):
         sync_mirror(db, row["conversation_id"])

@@ -28,14 +28,10 @@ from backend.app.ai.prompts.conversation import (
 SUMMARY_PROMPT = COMPACTION_SUMMARY_PROMPT
 BRANCH_PROMPT = COMPACTION_BRANCH_PROMPT
 
-# Rough character budgets. Chinese text is roughly one token per character,
-# latin text closer to one token per four characters; a blended constant keeps
-# the estimate honest without a tokenizer dependency.
+# Retained for legacy imports; actual estimates below distinguish ASCII/CJK.
 CHARS_PER_TOKEN = 2.4
 # Keep roughly this many tokens of recent history unsummarised.
 DEFAULT_KEEP_RECENT_TOKENS = 2000
-# Summary prompt output budget.
-SUMMARY_MAX_CHARS = 4000
 
 
 def estimate_tokens(text: str) -> int:
@@ -118,10 +114,7 @@ def build_branch_prompt(messages: list[dict], instructions: str = "") -> list[di
 
 
 def normalize_summary(text: str) -> str:
-    cleaned = (text or "").strip()
-    if len(cleaned) > SUMMARY_MAX_CHARS:
-        cleaned = cleaned[:SUMMARY_MAX_CHARS].rstrip() + "\n…"
-    return cleaned
+    return (text or "").strip()
 
 
 def to_context_message(summary: str) -> dict:

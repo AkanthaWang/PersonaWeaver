@@ -151,6 +151,12 @@ class ConversationRepository(SQLiteRepository):
                     (run_update["status"], reply, user_node_id, assistant_node_id, run_update.get("error"),
                      _dump(run_update.get("usage", {})), stamp, conversation_id, run_update["request_id"]),
                 )
+                if run_update["status"] == "completed" and run_update.get("memory_enabled"):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO conversation_memory_jobs"
+                        "(id,conversation_id,request_id,status,created_at,updated_at) VALUES(?,?,?,'queued',?,?)",
+                        (assistant_node_id, conversation_id, run_update["request_id"], stamp, stamp),
+                    )
 
     def append_compaction(
         self,
@@ -204,7 +210,14 @@ class ConversationRepository(SQLiteRepository):
 
     def clear_messages(self, conversation_id: str, stamp: str):
         with self.database.connect() as conn:
-            conn.execute("DELETE FROM conversation_runs WHERE conversation_id=?", (conversation_id,))
+            conn.execute("DELETE FROM conversation_memory_jobs WHERE conversation_id=?", (conversation_id,))
+            conn.execute("DELETE FROM conversation_memory_versions WHERE conversation_id=?", (conversation_id,))
+            # Retain idempotency tombstones, but erase cleared conversation text.
+            conn.execute(
+                "UPDATE conversation_runs SET cleared=1,status='interrupted',parent_id=NULL,message='',reply='',"
+                "user_node_id=NULL,assistant_node_id=NULL,sources='[]',context_usage='{}',usage='{}',result_json=NULL,"
+                "error='历史已清空，旧请求不会重新生成',updated_at=? WHERE conversation_id=?", (stamp, conversation_id),
+            )
             conn.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
             conn.execute("UPDATE conversations SET active_leaf_id=NULL,updated_at=? WHERE id=?", (stamp, conversation_id))
 

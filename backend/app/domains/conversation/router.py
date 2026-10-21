@@ -7,6 +7,7 @@ from backend.app.core.dependencies import current_user, get_db
 
 from .schemas import ActiveNodeRequest, CompactRequest, ConversationCreate, ConversationUpdate, LabelRequest, MessageRequest, ContextPreview
 from .service import ConversationService
+from .memories import MemoryInput
 
 router = APIRouter()
 
@@ -32,13 +33,17 @@ def rename_conversation(conversation_id: str, payload: ConversationUpdate, user=
 
 
 @router.delete("/conversations/{conversation_id}")
-def delete_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    return ConversationService(db).delete(user["user_id"], conversation_id)
+async def delete_conversation(conversation_id: str, request: Request, user=Depends(current_user), db=Depends(get_db)):
+    result = await asyncio.to_thread(ConversationService(db).delete, user["user_id"], conversation_id)
+    await request.app.state.conversation_engine.memory.cancel_conversation(conversation_id)
+    return result
 
 
 @router.delete("/conversations/{conversation_id}/messages")
-def clear_messages(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    return ConversationService(db).clear(user["user_id"], conversation_id)
+async def clear_messages(conversation_id: str, request: Request, user=Depends(current_user), db=Depends(get_db)):
+    result = await asyncio.to_thread(ConversationService(db).clear, user["user_id"], conversation_id)
+    await request.app.state.conversation_engine.memory.cancel_conversation(conversation_id)
+    return result
 
 
 @router.patch("/conversations/{conversation_id}/active-node")
@@ -67,13 +72,21 @@ async def send_message(conversation_id: str, payload: MessageRequest, request: R
     live = await engine.start(user["user_id"], conversation_id, payload, user.get("prompt", ""))
     if live.task:
         try:
+            while not live.task.done():
+                if await request.is_disconnected():
+                    await engine.cancel(user["user_id"], conversation_id, live.request_id, "interrupted")
+                    break
+                await asyncio.wait({live.task}, timeout=.15)
             await asyncio.shield(live.task)
         except asyncio.CancelledError:
             await engine.cancel(user["user_id"], conversation_id, live.request_id, "interrupted")
             raise
     result = engine.result(user["user_id"], conversation_id, live.request_id)
+    if result["status"] == "running":
+        raise HTTPException(503, f"回复持久化未完成，请保留请求 ID {live.request_id} 并查询或重连",
+                            headers={"X-Request-ID": live.request_id})
     if not result["reply"] and result["status"] != "completed":
-        raise HTTPException(502, result["error"] or "生成未完成")
+        raise HTTPException(502, result["error"] or "生成未完成", headers={"X-Request-ID": live.request_id})
     return result
 
 
@@ -98,3 +111,35 @@ async def cancel_generation(conversation_id: str, request_id: str, request: Requ
 @router.post("/conversations/{conversation_id}/context-preview")
 def context_preview(conversation_id: str, payload: ContextPreview, request: Request, user=Depends(current_user)):
     return request.app.state.conversation_engine.preview(user["user_id"], conversation_id, payload, user.get("prompt", ""))
+
+
+@router.get("/conversations/{conversation_id}/memories")
+def memories(conversation_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.list(user["user_id"], conversation_id)
+
+
+@router.post("/conversations/{conversation_id}/memories", status_code=201)
+def create_memory(conversation_id: str, payload: MemoryInput, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.mutate(user["user_id"], conversation_id, payload)
+
+
+@router.put("/conversations/{conversation_id}/memories/{memory_id}")
+def edit_memory(conversation_id: str, memory_id: str, payload: MemoryInput, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.mutate(user["user_id"], conversation_id, payload, memory_id)
+
+
+@router.delete("/conversations/{conversation_id}/memories/{memory_id}")
+def delete_memory(conversation_id: str, memory_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.mutate(
+        user["user_id"], conversation_id, memory_id=memory_id, operation="delete")
+
+
+@router.post("/conversations/{conversation_id}/memories/{memory_id}/undo")
+def undo_memory(conversation_id: str, memory_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.mutate(
+        user["user_id"], conversation_id, memory_id=memory_id, operation="undo")
+
+
+@router.post("/conversations/{conversation_id}/memory-jobs/{job_id}/retry")
+async def retry_memory(conversation_id: str, job_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.memory.retry(user["user_id"], conversation_id, job_id)

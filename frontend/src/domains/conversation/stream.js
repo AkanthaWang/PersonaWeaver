@@ -53,8 +53,18 @@ export function timelineForPath(path, pending = []) {
   return entries;
 }
 
+export function usageLabel(usage) {
+  if (!usage) return "";
+  const input = usage.prompt_tokens ?? usage.input_tokens ?? usage.prompt_eval_count ?? usage.promptTokenCount;
+  const output = usage.completion_tokens ?? usage.output_tokens ?? usage.eval_count ?? usage.candidatesTokenCount;
+  const parts = [];
+  if (typeof input === "number") parts.push(`输入 ${input.toLocaleString("zh-CN")}`);
+  if (typeof output === "number") parts.push(`输出 ${output.toLocaleString("zh-CN")}`);
+  return parts.length ? parts.join(" · ") + " tokens" : "已记录";
+}
+
 export class GenerationSession {
-  constructor({ api, fetchImpl = globalThis.fetch, onEvent }) {
+  constructor({ api, fetchImpl = (...args) => globalThis.fetch(...args), onEvent }) {
     Object.assign(this, { api, fetchImpl, onEvent, epoch: 0, active: null });
   }
   emit(epoch, name, data) {
@@ -76,11 +86,17 @@ export class GenerationSession {
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         const detail = body.detail;
-        throw new Error(typeof detail === "string" ? detail : `发送失败（HTTP ${response.status}）`);
+        const error = new Error(typeof detail === "string" ? detail : `发送失败（HTTP ${response.status}）`);
+        error.status = response.status;
+        throw error;
       }
       await readEventStream(response.body, (name, data) => this.emit(epoch, name, data));
     } catch (error) {
       if (epoch !== this.epoch || this.active.terminal) return;
+      if (error.status >= 400 && error.status < 500) {
+        this.emit(epoch, "error", { message: error.message, uncertain: false, request_id: payload.request_id });
+        return;
+      }
       // A lost response must never result in an automatic second paid request.
       try {
         let saved = await this.api.get(`/conversations/${conversationId}/generations/${payload.request_id}`);
@@ -91,7 +107,7 @@ export class GenerationSession {
           ...await this.api.get(`/conversations/${conversationId}`), ...saved, response: saved.reply,
         });
       } catch {
-        this.emit(epoch, "error", { message: error.message, request_id: payload.request_id });
+        this.emit(epoch, "error", { message: error.message, uncertain: true, request_id: payload.request_id });
       }
     }
   }
@@ -110,5 +126,6 @@ export class GenerationSession {
       this.api.post(`/conversations/${active.conversationId}/generations/${active.requestId}/cancel`).catch(() => {});
     }
     active?.controller.abort();
+    this.active = null;
   }
 }

@@ -25,7 +25,7 @@ def chat_client(tmp_path, monkeypatch):
     from backend.app.ai.providers import conversation_stream
 
     async def stream(settings, messages, json_mode=False):
-        yield {"text": reply(settings, messages)}
+        yield {"text": '{"memories":[]}' if json_mode else reply(settings, messages)}
 
     monkeypatch.setattr(conversation_stream, "stream", stream)
     app = create_app(Config(data_dir=tmp_path, database_path=tmp_path / "test.sqlite3"))
@@ -122,3 +122,40 @@ def test_busy_conversation_rejects_branch_mutations(chat_client):
         assert client.patch(f"/api/v1/conversations/{cid}/active-node", json={"node_id": None}).status_code == 409
         assert client.delete(f"/api/v1/conversations/{cid}/messages").status_code == 409
         assert client.post(f"/api/v1/conversations/{cid}/messages", json={"message": "busy"}).status_code == 409
+
+
+def test_corrupt_mirror_is_rebuilt_without_repeating_model_calls(chat_client):
+    from pathlib import Path
+    from backend.app.domains.conversation.mirror import recover_mirrors
+    client, calls = chat_client
+    cid = create(client)
+    result = send(client, cid)
+    Path(result["session_file"]).write_text("{broken", encoding="utf-8")
+    recover_mirrors(client.app.state.db)
+    entries = SessionStore(client.app.state.db.path.parent).read(result["session_file"])
+    assert len(entries) == 3
+    assert len(calls) == 1
+
+
+def test_mirror_ack_does_not_erase_newer_outbox_work(chat_client, monkeypatch):
+    from backend.app.db.database import identifier, now
+    from backend.app.domains.conversation.mirror import sync_mirror
+    from backend.app.domains.conversation.repository import ConversationRepository
+    client, _ = chat_client
+    cid = create(client)
+    result = send(client, cid)
+    db = client.app.state.db
+    repo = ConversationRepository(db)
+    repo.set_label(cid, result["active_leaf_id"], "before")
+    original = SessionStore.rebuild
+
+    def changed(*args, **kwargs):
+        original(*args, **kwargs)
+        repo.set_label(cid, result["active_leaf_id"], "newer")
+
+    monkeypatch.setattr(SessionStore, "rebuild", changed)
+    sync_mirror(db, cid)
+    assert db.one("SELECT * FROM conversation_mirrors WHERE conversation_id=?", (cid,))
+    monkeypatch.setattr(SessionStore, "rebuild", original)
+    sync_mirror(db, cid)
+    assert not db.one("SELECT * FROM conversation_mirrors WHERE conversation_id=?", (cid,))

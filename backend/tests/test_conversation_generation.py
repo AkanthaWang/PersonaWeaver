@@ -187,3 +187,62 @@ def test_native_eof_without_terminator_is_failure(monkeypatch):
                 events.append(event)
         assert events == [{"text": "partial"}]
     asyncio.run(check())
+
+
+def test_stream_disconnect_saves_partial_reply(chat_client, monkeypatch):
+    client, _ = chat_client
+    cid = create(client)
+    user = client.get("/api/v1/auth/me").json()["user_id"]
+
+    async def partial(*args, **kwargs):
+        yield {"text": "断连前文本"}
+        await asyncio.sleep(100)
+
+    monkeypatch.setattr(provider, "stream", partial)
+
+    async def scenario():
+        engine = GenerationEngine(client.app.state.db)
+        live = await engine.start(user, cid, MessageRequest(message="hi", request_id="disconnect"))
+        events = engine.events(live)
+        async for event in events:
+            if event.startswith("event: delta"):
+                break
+        await events.aclose()
+        result = engine.result(user, cid, "disconnect")
+        assert result["status"] == "interrupted"
+        assert result["reply"] == "断连前文本"
+        assert len(result["messages"]) == 2
+        await engine.shutdown()
+    asyncio.run(scenario())
+
+
+def test_context_window_is_persisted_and_auto_compaction_keeps_recent_turns(chat_client):
+    client, calls = chat_client
+    model = client.post("/api/v1/settings/models", json={
+        "name": "small", "context_window": 2048, "max_tokens": 128, "activate": True,
+    }).json()
+    assert model["context_window"] == 2048
+    assert client.get("/api/v1/settings/model").json()["context_window"] == 2048
+    cid = create(client)
+    for i in range(6):
+        result = send(client, cid, f"第{i}轮" + "甲" * 160)
+    assert any(e["entry_type"] == "compaction" for e in result["context"])
+    assert result["context_usage"]["input_tokens"] <= result["context_usage"]["available_input"]
+    assert any("第4轮" in m["content"] for m in calls[-1])
+    refused = client.post(f"/api/v1/conversations/{cid}/messages", json={"message": "甲" * 1200})
+    assert refused.status_code == 422
+
+
+def test_clear_keeps_request_tombstone_without_retaining_text(chat_client):
+    client, calls = chat_client
+    cid = create(client)
+    send(client, cid, "需要清空的内容", request_id="before-clear")
+    client.delete(f"/api/v1/conversations/{cid}/messages").raise_for_status()
+    response = client.post(f"/api/v1/conversations/{cid}/messages",
+                           json={"message": "需要清空的内容", "request_id": "before-clear"})
+    assert response.status_code == 409
+    assert len(calls) == 1
+    assert client.get(f"/api/v1/conversations/{cid}").json()["messages"] == []
+    row = client.app.state.db.one("SELECT * FROM conversation_runs WHERE conversation_id=?", (cid,))
+    assert row["message"] == row["reply"] == ""
+    assert row["cleared"] == 1
