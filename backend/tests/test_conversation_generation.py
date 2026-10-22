@@ -64,7 +64,7 @@ def test_roleplay_uses_card_intro_and_user_agency_rules(chat_client):
     assert result["context_usage"]["components"]["knowledge"] <= 2048
 
 
-def test_preview_disables_remote_retrieval_but_generation_enables_it(chat_client, monkeypatch):
+def test_preview_and_generation_disable_remote_retrieval(chat_client, monkeypatch):
     from backend.app.domains.conversation import knowledge_search
 
     client, _ = chat_client
@@ -86,7 +86,54 @@ def test_preview_disables_remote_retrieval_but_generation_enables_it(chat_client
     client.post(f"/api/v1/conversations/{cid}/context-preview", json={"message": "hello"}).raise_for_status()
     assert modes == [False]
     send(client, cid, "hello")
-    assert modes == [False, True]
+    assert modes == [False, False]
+
+
+@pytest.mark.parametrize("transport", ["messages", "messages/stream"])
+def test_chat_does_not_embed_even_with_a_selected_embedding_model(chat_client, monkeypatch, transport):
+    from backend.app.domains.conversation import semantic_search
+    from backend.app.domains.retrieval import vector
+
+    client, calls = chat_client
+    db = client.app.state.db
+    user = client.get("/api/v1/auth/me").json()["user_id"]
+    db.execute(
+        "INSERT INTO books(book_id,user_id,title,source_type,file_name,source_path,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)", ("book_local", user, "Story", "txt", "a.txt", "a.txt", now(), now()),
+    )
+    book_db = db.book_database("book_local")
+    book_db.execute(
+        "INSERT INTO chapters(id,book_id,chapter_no,title,content,word_count) VALUES(?,?,?,?,?,?)",
+        ("chapter_local", "book_local", 1, "城东", "林默在城东等候。", 8),
+    )
+    db.execute(
+        "INSERT INTO model_profiles(id,user_id,name,provider,base_url,model,model_type,test_status,"
+        "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        ("embed_disabled", user, "Embedding", "remote_api", "http://never-called.invalid",
+         "embedding", "embedding", "passed", now(), now()),
+    )
+    db.execute(
+        "INSERT INTO model_selections(user_id,embedding_model_id) VALUES(?,?) "
+        "ON CONFLICT(user_id) DO UPDATE SET embedding_model_id=excluded.embedding_model_id",
+        (user, "embed_disabled"),
+    )
+    embedding_calls = []
+
+    def forbidden(*args, **kwargs):
+        embedding_calls.append(True)
+        raise AssertionError("Chat must not invoke semantic recall or Embedding")
+
+    monkeypatch.setattr(semantic_search, "recall", forbidden)
+    monkeypatch.setattr(vector, "embed", forbidden)
+    response = client.post("/api/v1/conversations", json={"book_id": "book_local", "memory_enabled": False})
+    response.raise_for_status()
+    cid = response.json()["id"]
+    client.post(f"/api/v1/conversations/{cid}/context-preview", json={"message": "林默"}).raise_for_status()
+    assert calls == [] and embedding_calls == []
+    client.post(f"/api/v1/conversations/{cid}/{transport}", json={"message": "林默"}).raise_for_status()
+    assert len(calls) == 1 and embedding_calls == []
+    assert "林默在城东等候" in calls[0][0]["content"]
+    assert book_db.one("SELECT COUNT(*) AS count FROM chapter_vectors")["count"] == 0
 
 
 def test_knowledge_budget_keeps_whole_records_and_reserves_conversation_room(chat_client):

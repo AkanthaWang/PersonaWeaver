@@ -66,7 +66,7 @@ class GenerationEngine:
             "request_id", "status", "reply", "user_node_id", "assistant_node_id", "error", "updated_at", "cleared"
         )} | {k: json.loads(run[k]) for k in ("usage", "context_usage", "sources")}
 
-    def optional_context(self, user_id, row, path, message, *, use_embeddings=True):
+    def optional_context(self, user_id, row, path, message):
         result = {}
         if row.get("book_id") and row.get("knowledge_enabled"):
             from .knowledge_search import retrieve
@@ -78,15 +78,15 @@ class GenerationEngine:
                                if n.get("entry_type") == "message" and n.get("role") == "user"), "")
                 query += " " + recent[:500]
             result["knowledge"] = retrieve(
-                self.db, user_id, row["book_id"], query, limit=6, use_embeddings=use_embeddings,
+                self.db, user_id, row["book_id"], query, limit=6, use_embeddings=False,
             )
         if self.memory:
             result["memory"] = self.memory.context(row["id"], path)
         return result
 
-    def prepare(self, user_id, row, payload, parent_id, user_prompt="", *, use_embeddings=True):
+    def prepare(self, user_id, row, payload, parent_id, user_prompt=""):
         path = self.service.repo.path(row["id"], parent_id)
-        optional = self.optional_context(user_id, row, path, payload.message, use_embeddings=use_embeddings)
+        optional = self.optional_context(user_id, row, path, payload.message)
         return budget.prepare(self.service, user_id, row, payload, parent_id, user_prompt, optional)
 
     def preview(self, user_id, cid, payload, user_prompt=""):
@@ -94,7 +94,7 @@ class GenerationEngine:
         parent = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
         if parent and not self.service.repo.node(cid, parent):
             raise HTTPException(404, "父消息节点不存在")
-        prepared = self.prepare(user_id, row, payload, parent, user_prompt, use_embeddings=False)
+        prepared = self.prepare(user_id, row, payload, parent, user_prompt)
         return {"context_usage": prepared["context_usage"], "sources": prepared["sources"],
                 "capabilities": provider.capability(prepared["settings"])}
 
