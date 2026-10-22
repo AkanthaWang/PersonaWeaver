@@ -11,6 +11,7 @@
         <div class="icon-actions">
           <el-tooltip content="编辑角色卡"><el-button :icon="Edit" circle aria-label="编辑角色卡" @click="openEditor(card)" /></el-tooltip>
           <el-tooltip content="查看角色卡"><el-button :icon="View" circle aria-label="查看角色卡" @click="preview = card" /></el-tooltip>
+          <el-tooltip content="精简角色卡"><el-button :icon="MagicStick" circle aria-label="精简角色卡" :loading="compacting === card.id" :disabled="Boolean(compacting)" @click="compactCard(card)" /></el-tooltip>
           <el-tooltip content="开始角色对话"><el-button :icon="ChatDotRound" circle aria-label="开始角色对话" @click="startChat(card)" /></el-tooltip>
           <el-tooltip content="导出 Markdown"><el-button :icon="Download" circle aria-label="导出角色卡" @click="exportCard(card)" /></el-tooltip>
           <el-tooltip content="删除角色卡"><el-button :icon="Delete" circle type="danger" plain aria-label="删除角色卡" @click="remove(card)" /></el-tooltip>
@@ -22,7 +23,7 @@
     <el-form label-position="top" @submit.prevent="save">
       <el-form-item label="名称"><el-input v-model="form.name" maxlength="100" required /></el-form-item>
       <el-form-item label="简介"><el-input v-model="form.intro" type="textarea" :rows="2" maxlength="4000" /></el-form-item>
-      <el-form-item label="角色卡正文"><el-input v-model="form.content" type="textarea" :rows="14" maxlength="50000" /></el-form-item>
+      <el-form-item label="核心人设"><el-input v-model="form.content" type="textarea" :rows="6" maxlength="50000" /></el-form-item>
       <el-button type="primary" :icon="Check" native-type="submit" :loading="saving">保存</el-button>
     </el-form>
   </el-dialog>
@@ -42,8 +43,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
-import { Plus, Search, Refresh, Edit, View, ChatDotRound, Download, Delete, Check } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { Plus, Search, Refresh, Edit, View, MagicStick, ChatDotRound, Download, Delete, Check } from "@element-plus/icons-vue";
 import MarkdownRender from "markstream-vue";
 import "markstream-vue/index.css";
 import BookPicker from "../../../components/BookPicker.vue";
@@ -53,6 +54,7 @@ import { report, confirmDelete, dateText } from "../../../lib/ui";
 import { characterAvatarUrl } from "../../../lib/avatar";
 const workspace = useWorkspaceStore(), router = useRouter();
 const cards = ref([]), loading = ref(false), query = ref(""), editing = ref(false), saving = ref(false), preview = ref(null);
+const compacting = ref("");
 const form = reactive({ id: "", name: "", intro: "", content: "", book_id: "" });
 const visible = computed(() => cards.value.filter((card) => `${card.name} ${card.intro}`.toLowerCase().includes(query.value.toLowerCase())));
 let generation = 0;
@@ -81,9 +83,25 @@ async function remove(card) {
   if (!await confirmDelete(`删除角色卡“${card.name}”？已有对话会保留。`)) return;
   try { await api.delete(`/cards/${card.id}`); await load(); } catch (error) { report(error); }
 }
+async function compactCard(card) {
+  if (compacting.value) return;
+  try {
+    await ElMessageBox.confirm(
+      `将依据当前人物档案和简介重建“${card.name}”的核心人设，替换现有正文，包括手工编辑。是否继续？`,
+      "精简角色卡", { type: "warning", confirmButtonText: "精简", cancelButtonText: "取消" },
+    );
+  } catch { return; }
+  compacting.value = card.id;
+  try {
+    const updated = await api.post(`/cards/${card.id}/compact`);
+    if (preview.value?.id === card.id) preview.value = updated;
+    await load();
+    ElMessage.success("角色卡已精简");
+  } catch (error) { report(error); } finally { compacting.value = ""; }
+}
 async function exportCard(card) { try { await download(`/cards/${card.id}/export`, `${card.name}.md`); } catch (error) { report(error); } }
 async function startChat(card) {
-  try { const conversation = await api.post("/conversations", { card_id: card.id, title: card.name }); router.push({ path: "/chat", query: { conversation: conversation.id } }); }
+  try { const conversation = await api.post("/conversations", { card_id: card.id, title: card.name, mode: "roleplay" }); router.push({ path: "/chat", query: { conversation: conversation.id } }); }
   catch (error) { report(error); }
 }
 function editFromPreview() { const card = preview.value; preview.value = null; openEditor(card); }

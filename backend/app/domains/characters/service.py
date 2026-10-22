@@ -10,8 +10,7 @@ from .repository import CharacterRepository
 
 
 INTRO_LIMIT = 220
-# CardUpdate allows 50000 characters; keep generated cards safely editable.
-CONTENT_LIMIT = 48000
+CONTENT_LIMIT = 1000
 
 
 def clip(text, limit=INTRO_LIMIT):
@@ -43,47 +42,24 @@ def card_intro(entry, limit=INTRO_LIMIT):
     return clip(" ".join(parts), limit)
 
 
-def card_markdown(entry, include_changes=True, include_evidence=True):
-    def text(value):
-        if isinstance(value, list):
-            return "\n".join(f"- {text(item)}" for item in value)
-        if isinstance(value, dict):
-            return json.dumps(value, ensure_ascii=False)
-        return str(value or "")
-
+def card_markdown(entry):
+    """Keep the persistent persona small; chapter facts belong in retrieval."""
     sections = [f"# {entry['name']}"]
-    if entry.get("synthesis"):
-        sections.append("## 综合档案（模型归纳）\n\n" + "\n\n".join(
-            paragraph["text"] + "\n\n事实依据：" + "、".join(paragraph["fact_ids"])
-            for paragraph in entry["synthesis"]
-        ))
-    for label, key in (("简介", "summary"), ("身份", "identity"), ("外貌", "appearance"),
-                       ("性格", "personality"), ("行为", "behavior"), ("台词", "speech"),
-                       ("关键经历", "key_events"), ("关系", "relationships")):
-        if entry.get(key) and not (key == "summary" and entry.get("synthesis")):
-            sections.append(f"## {label}\n\n{text(entry[key])}")
-    changes = []
-    for key, label in (("identity", "身份"), ("state_changes", "状态"), ("relationships", "关系")):
-        for change in entry.get("field_history", {}).get(key, []):
-            changes.append((change["chapter_no"], f"### {change['chapter']} · {label}\n\n{text(change['value'])}"))
-    if changes and include_changes:
-        sections.append("## 按章变化\n\n" + "\n\n".join(value for _, value in sorted(changes, key=lambda c: c[0])))
-    if entry.get("evidence") and include_evidence:
-        sections.append("## 章节依据\n\n" + "\n\n".join(
-            f"### {item['chapter']}\n\n{text({k: v for k, v in item.items() if k not in {'chapter', 'name'}})}"
-            for item in entry["evidence"]
-        ))
+    intro = card_intro(entry)
+    if intro:
+        sections.append("## 简介\n\n" + intro)
+    for label, key in (("身份", "identity"), ("性格", "personality"), ("说话方式", "speech")):
+        value = entry.get(key)
+        if isinstance(value, list):
+            value = "；".join(str(item) for item in value[:3] if isinstance(item, str))
+        if isinstance(value, str) and value.strip():
+            sections.append(f"## {label}\n\n{clip(value, 160)}")
     return "\n\n".join(sections)
 
 
 def card_content(entry, limit=CONTENT_LIMIT):
-    """Keep generated cards editable: drop optional reference sections before truncating."""
-
+    """Generate a short persona, never a copy of the knowledge archive."""
     content = card_markdown(entry)
-    for options in ({"include_evidence": False}, {"include_evidence": False, "include_changes": False}):
-        if len(content) <= limit:
-            break
-        content = card_markdown(entry, **options)
     if len(content) > limit:
         content = content[: limit - 1].rstrip() + "…"
     return content
@@ -196,6 +172,18 @@ class CharacterService:
         self.owned(user_id, card_id)
         self.repo.delete(card_id)
         return {"ok": True}
+
+    def compact(self, user_id: str, card_id: str):
+        card = self.owned(user_id, card_id)
+        book_db = self.repo.database.book_database(card["book_id"])
+        entry = self.knowledge_entry(book_db, card["book_id"], card["name"])
+        if not entry and not card["intro"].strip():
+            raise HTTPException(422, "缺少人物档案或简介，请先补充简介")
+        entry = {**(entry or {"summary": card["intro"]}), "name": card["name"]}
+        if not card_intro(entry):
+            entry["summary"] = card["intro"]
+        self.repo.update(card_id, card["name"], card_intro(entry), card_content(entry), now())
+        return self.owned(user_id, card_id)
 
     def export(self, user_id: str, card_id: str):
         return self.owned(user_id, card_id)

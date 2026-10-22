@@ -1,8 +1,13 @@
 import json
 
+import pytest
+from fastapi import HTTPException
+
 from backend.app.db.database import Database, now
 from backend.app.domains.characters.schemas import CardFromCharacter
 from backend.app.domains.characters.service import CharacterService, card_intro
+from backend.app.domains.conversation.schemas import ConversationCreate
+from backend.app.domains.conversation.service import ConversationService
 
 
 def book_with_character(tmp_path, synthesis=True):
@@ -94,6 +99,57 @@ def test_long_character_keeps_card_within_editable_limit(tmp_path):
     card = CharacterService(db).from_character(
         "user_1", CardFromCharacter(book_id="book_1", character_id="character_1"),
     )["card"]
-    assert len(card["content"]) <= 48000
+    assert len(card["content"]) <= 1000
     assert "## 章节依据" not in card["content"]
     assert len(card["intro"]) <= 220
+
+
+def test_card_keeps_persona_not_history_or_references(tmp_path):
+    db, book_db = book_with_character(tmp_path)
+    entry = json.loads(book_db.one("SELECT content FROM knowledge_entities")["content"])
+    entry.update(
+        speech=["惜字如金", "习惯反问"],
+        key_events=["十年前的战役"],
+        relationships=["与城主结盟"],
+        field_history={"identity": [{"chapter_no": 2, "chapter": "第二章", "value": "隐秘身份"}]},
+        evidence=[{"chapter": "第三章", "quote": "完整引文"}],
+    )
+    book_db.execute("UPDATE knowledge_entities SET content=?", (json.dumps(entry, ensure_ascii=False),))
+    card = CharacterService(db).from_character(
+        "user_1", CardFromCharacter(book_id="book_1", character_id="character_1"),
+    )["card"]
+    assert "惜字如金" in card["content"] and "## 简介" in card["content"]
+    for excluded in ("fact_1", "完整引文", "十年前的战役", "与城主结盟", "隐秘身份", "按章变化"):
+        assert excluded not in card["content"]
+    assert "完整引文" in book_db.one("SELECT content FROM knowledge_entities")["content"]
+
+
+def test_compact_is_explicit_and_preserves_card_and_conversation_links(tmp_path):
+    db, _ = book_with_character(tmp_path)
+    service = CharacterService(db)
+    card = service.from_character(
+        "user_1", CardFromCharacter(book_id="book_1", character_id="character_1"),
+    )["card"]
+    conversation = ConversationService(db).create(
+        "user_1", ConversationCreate(card_id=card["id"]),
+    )
+    db.execute("UPDATE cards SET content=? WHERE id=?", ("手工内容" * 1000, card["id"]))
+    assert service.owned("user_1", card["id"])["content"] == "手工内容" * 1000
+    with pytest.raises(HTTPException) as forbidden:
+        service.compact("other", card["id"])
+    assert forbidden.value.status_code == 404
+    compacted = service.compact("user_1", card["id"])
+    assert compacted["id"] == card["id"] and compacted["book_id"] == "book_1"
+    assert len(compacted["content"]) <= 1000
+    assert db.one("SELECT card_id FROM conversations WHERE id=?", (conversation["id"],))["card_id"] == card["id"]
+
+
+def test_compact_preserves_intro_when_knowledge_projection_is_empty(tmp_path):
+    db, book_db = book_with_character(tmp_path)
+    card = CharacterService(db).from_character(
+        "user_1", CardFromCharacter(book_id="book_1", character_id="character_1"),
+    )["card"]
+    book_db.execute("UPDATE knowledge_entities SET content=?", (json.dumps({"name": "林默"}),))
+    compacted = CharacterService(db).compact("user_1", card["id"])
+    assert compacted["intro"] == card["intro"]
+    assert card["intro"] in compacted["content"]

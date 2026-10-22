@@ -1,4 +1,4 @@
-"""Local lexical retrieval. No embedding credentials, network requests or canon writes."""
+"""Filtered local recall, with optional semantic recall when sending a message."""
 
 import hashlib
 import json
@@ -153,7 +153,7 @@ def ensure_index(db, book_id):
     return state["revision"]
 
 
-def retrieve(database, user_id, book_id, query, limit=12):
+def retrieve(database, user_id, book_id, query, limit=12, *, use_embeddings=True):
     if not database.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
         raise HTTPException(404, "关联作品不存在")
     db = database.book_database(book_id)
@@ -180,12 +180,22 @@ def retrieve(database, user_id, book_id, query, limit=12):
     for row in rows:
         item = json.loads(row["payload"])
         exact = any(name.casefold() in lowered for name in [item["title"], *item.get("aliases", [])] if name)
+        candidates.append((not exact, row["rank"], item))
+    keyword = [item for _, _, item in sorted(candidates, key=lambda v: (v[0], v[1]))]
+    semantic = []
+    if use_embeddings and query.strip():
+        from .semantic_search import recall
+        indexed = [json.loads(row["payload"]) for row in db.all("SELECT payload FROM chat_documents")]
+        semantic = recall(database, db, user_id, expanded, indexed, max(24, limit * 2))
+    from .semantic_search import fuse
+    results = fuse(keyword, semantic, limit)
+    for item in results:
         item["index_revision"] = revision
+        item["retrieval"] = "hybrid" if semantic else "keyword"
         # Titles and verified quotes are included in the model budget, not just the drawer.
         item["content"] = f"[{item['id']}] {item['title']}\n{item['content']}" + (
             f"\n第{item['chapter_no']}章引文：{item['quote']}" if item.get("quote") and item["kind"] != "chapter" else "")
-        candidates.append((not exact, row["rank"], item))
-    return [item for _, _, item in sorted(candidates, key=lambda v: (v[0], v[1]))[:limit]]
+    return results
 
 
 def rebuild_index(db, book_id):

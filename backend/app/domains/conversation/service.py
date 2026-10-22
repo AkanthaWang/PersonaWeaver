@@ -5,14 +5,13 @@ import json
 
 from fastapi import HTTPException
 
-from backend.app.ai.prompts.conversation import CONVERSATION_GROUNDED_SYSTEM
 from backend.app.db.database import identifier, now
 from backend.app.domains.characters.service import CharacterService
 from backend.app.domains.settings import llm
 from backend.app.domains.settings.repository import SettingsRepository
 
-from . import compaction
-from .memory_context import build_context, effective_entries, metadata, resolve_path
+from . import budget, compaction
+from .memory_context import effective_entries, metadata, resolve_path
 from .mirror import sync_mirror
 from .repository import ConversationRepository
 from .session_store import SessionStore
@@ -255,14 +254,8 @@ class ConversationService:
         with _conversation_lock(conversation_id):
             row = self.get_owned(user_id, conversation_id)
             parent_id = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
-            path = self.repo.path(conversation_id, parent_id)
-            system = payload.system_prompt or user_prompt or CONVERSATION_GROUNDED_SYSTEM
-            card_content = ""
-            if row["card_id"]:
-                card_content = self.characters.owned(user_id, row["card_id"])["content"]
-            messages = build_context(system, payload.message, path, card_content)
-            profile_id = payload.profile_id or row.get("profile_id")
-            settings = llm.load_settings_for_profile(self.db, user_id, profile_id)
+            prepared = budget.prepare(self, user_id, row, payload, parent_id, user_prompt)
+            settings, messages = prepared["settings"], prepared["messages"]
             try:
                 reply = llm.chat(settings, messages)
             except HTTPException:

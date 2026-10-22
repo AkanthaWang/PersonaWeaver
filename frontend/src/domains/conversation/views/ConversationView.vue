@@ -100,7 +100,7 @@ const generation = new GenerationSession({ api, onEvent: receiveEvent });
 const activeNodeId = computed(() => selected.value?.active_leaf_id || null), activePath = computed(() => new Set((selected.value?.context || messages.value).map((message) => message.id).filter(Boolean))), activeChildCount = computed(() => activeNodeId.value ? tree.value.filter((node) => node.parent_id === activeNodeId.value).length : 0);
 const filteredConversations = computed(() => { const query = conversationFilter.value.trim().toLowerCase(); return query ? conversations.value.filter((item) => item.title.toLowerCase().includes(query)) : conversations.value; });
 const selectedCard = computed(() => cards.value.find((card) => card.id === selected.value?.card_id));
-const composerPlaceholder = computed(() => !selected.value ? "先选择一个会话…" : selectedCard.value ? `以「${selectedCard.value.name}」的身份开始对话…` : "写下你的下一句话…");
+const composerPlaceholder = computed(() => !selected.value ? "先选择一个会话…" : selectedCard.value ? `对「${selectedCard.value.name}」说些什么…` : "写下你的下一句话…");
 const canSend = computed(() => Boolean(selected.value && draft.value.trim() && !sending.value && !uncertain.value && !profilesLoading.value));
 const draftPercent = computed(() => Math.round((draft.value.length / 12000) * 100));
 const draftCountClass = computed(() => draftPercent.value >= 100 ? "is-limit" : draftPercent.value >= 90 ? "is-warning" : "");

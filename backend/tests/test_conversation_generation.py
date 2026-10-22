@@ -41,6 +41,74 @@ def test_preview_is_model_free_and_accounts_for_output(chat_client):
                        json={"message": "hello", "profile_id": "missing"}).status_code == 404
 
 
+def test_roleplay_uses_card_intro_and_user_agency_rules(chat_client):
+    client, calls = chat_client
+    db = client.app.state.db
+    user = client.get("/api/v1/auth/me").json()["user_id"]
+    db.execute(
+        "INSERT INTO books(book_id,user_id,title,source_type,file_name,source_path,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)", ("book_role", user, "Story", "txt", "a.txt", "a.txt", now(), now()),
+    )
+    card = client.post("/api/v1/cards", json={
+        "book_id": "book_role", "name": "林默", "intro": "谨慎寡言的猎户", "content": "说话简短",
+    }).json()
+    response = client.post("/api/v1/conversations", json={"card_id": card["id"], "memory_enabled": False})
+    response.raise_for_status()
+    conversation = response.json()
+    assert conversation["mode"] == "roleplay"
+    result = send(client, conversation["id"], "你是谁？")
+    system = calls[-1][0]["content"]
+    assert "姓名：林默" in system and "谨慎寡言的猎户" in system and "说话简短" in system
+    assert "角色第一人称" in system and "不要替用户编写台词" in system
+    assert "你是小说创作助手" not in system
+    assert result["context_usage"]["components"]["knowledge"] <= 2048
+
+
+def test_preview_disables_remote_retrieval_but_generation_enables_it(chat_client, monkeypatch):
+    from backend.app.domains.conversation import knowledge_search
+
+    client, _ = chat_client
+    cid = create(client)
+    engine = client.app.state.conversation_engine
+    user = client.get("/api/v1/auth/me").json()["user_id"]
+    engine.db.execute(
+        "INSERT INTO books(book_id,user_id,title,source_type,file_name,source_path,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)", ("book_mock", user, "Story", "txt", "a.txt", "a.txt", now(), now()),
+    )
+    engine.db.execute("UPDATE conversations SET book_id='book_mock' WHERE id=?", (cid,))
+    modes = []
+
+    def retrieve(*args, **kwargs):
+        modes.append(kwargs["use_embeddings"])
+        return []
+
+    monkeypatch.setattr(knowledge_search, "retrieve", retrieve)
+    client.post(f"/api/v1/conversations/{cid}/context-preview", json={"message": "hello"}).raise_for_status()
+    assert modes == [False]
+    send(client, cid, "hello")
+    assert modes == [False, True]
+
+
+def test_knowledge_budget_keeps_whole_records_and_reserves_conversation_room(chat_client):
+    from backend.app.domains.conversation import budget
+
+    client, _ = chat_client
+    cid = create(client)
+    engine = client.app.state.conversation_engine
+    user = client.get("/api/v1/auth/me").json()["user_id"]
+    records = [{"id": f"source_{i}", "content": str(i) + "甲" * 400} for i in range(20)]
+    prepared = budget.prepare(
+        engine.service, user, engine.service.get_owned(user, cid),
+        MessageRequest(message="hello"), None, optional={"knowledge": records},
+    )
+    usage = prepared["context_usage"]
+    assert 0 < usage["components"]["knowledge"] <= min(2048, usage["available_input"] * .2)
+    assert 0 < len(prepared["sources"]) < len(records)
+    for source in prepared["sources"]:
+        assert source["content"] in prepared["messages"][0]["content"]
+    assert usage["fits"]
+
+
 def test_stream_events_and_partial_failure(chat_client, monkeypatch):
     client, _ = chat_client
     cid = create(client)

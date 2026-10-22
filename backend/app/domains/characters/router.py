@@ -76,6 +76,11 @@ def update_card(card_id: str, payload: CardUpdate, user=Depends(current_user), d
     return CharacterService(db).update(user["user_id"], card_id, payload)
 
 
+@router.post("/cards/{card_id}/compact")
+def compact_card(card_id: str, user=Depends(current_user), db=Depends(get_db)):
+    return CharacterService(db).compact(user["user_id"], card_id)
+
+
 @router.delete("/cards/{card_id}")
 def delete_card(card_id: str, user=Depends(current_user), db=Depends(get_db)):
     return CharacterService(db).delete(user["user_id"], card_id)

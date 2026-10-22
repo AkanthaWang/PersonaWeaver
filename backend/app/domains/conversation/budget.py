@@ -2,7 +2,7 @@
 
 from fastapi import HTTPException
 
-from backend.app.ai.prompts.conversation import CONVERSATION_GROUNDED_SYSTEM
+from backend.app.ai.prompts.conversation import CONVERSATION_GROUNDED_SYSTEM, CONVERSATION_ROLEPLAY_SYSTEM
 from backend.app.domains.settings import llm
 
 from .compaction import estimate_tokens, messages_tokens
@@ -19,8 +19,12 @@ def prepare(service, user_id, row, payload, parent_id, user_prompt="", optional=
         service._validated_profile(user_id, payload.profile_id)
     settings = llm.load_settings_for_profile(service.db, user_id, payload.profile_id or row.get("profile_id"))
     path = service.repo.path(row["id"], parent_id)
-    card = service.characters.owned(user_id, row["card_id"])["content"] if row["card_id"] else ""
-    role = "请按角色卡进行角色扮演。" if row.get("mode") == "roleplay" else CONVERSATION_GROUNDED_SYSTEM
+    character = service.characters.owned(user_id, row["card_id"]) if row["card_id"] else None
+    card = (
+        f"姓名：{character['name']}\n简介：{character['intro']}\n{character['content']}"
+        if character else ""
+    )
+    role = CONVERSATION_ROLEPLAY_SYSTEM if row.get("mode") == "roleplay" else CONVERSATION_GROUNDED_SYSTEM
     rules = role + BOUNDARY + "\n" + (getattr(payload, "system_prompt", "") or user_prompt)
     window = settings.get("context_window") or 32768
     reserve = settings.get("max_tokens") or 2048
@@ -41,6 +45,8 @@ def prepare(service, user_id, row, payload, parent_id, user_prompt="", optional=
         for item in (optional or {}).get(kind, []):
             text = f"\n【{title}】\n{item['content']}"
             cost = estimate_tokens(text)
+            if kind == "knowledge" and components[kind] + cost > min(2048, available * .2):
+                continue
             if fixed + components["history"] + sum(components[k] for k in ("memory", "knowledge")) + cost > available * .8:
                 continue
             sections.append(text)
