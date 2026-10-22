@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 from backend.app.db.database import Database
 
@@ -91,3 +92,35 @@ def test_initialize_adds_chapter_metadata_without_losing_legacy_rows(tmp_path):
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"cancel_requested", "parent_task_id", "config_fingerprint", "input_fingerprint"} <= task_columns
     assert {"extraction_units", "knowledge_entities", "entity_resolutions"} <= tables
+
+
+def test_concurrent_book_database_access_initializes_once(tmp_path):
+    db = Database(tmp_path / "concurrent.sqlite3")
+    db.initialize()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        databases = list(pool.map(lambda _: db.book_database("book_concurrent"), range(48)))
+
+    assert all(database is databases[0] for database in databases)
+    with databases[0].connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        triggers = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+        }
+    assert {"chat_index_state", "chat_documents", "chat_fts"} <= tables
+    assert "chat_revision_chapters_insert" in triggers
+
+
+def test_book_database_reads_do_not_require_writer_lock(tmp_path):
+    db = Database(tmp_path / "writer.sqlite3")
+    db.initialize()
+    scoped = db.book_database("book_writer")
+
+    with scoped.connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        reader = db.book_database("book_writer")
+        assert reader.one("SELECT revision FROM chat_index_state WHERE id=1") == {"revision": 0}

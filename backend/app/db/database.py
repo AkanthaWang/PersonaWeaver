@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import sqlite3
+import threading
 import uuid
 
 
@@ -359,6 +360,8 @@ BOOK_SCOPED_TABLES = {
 class Database:
     def __init__(self, path: Path):
         self.path = path
+        self._book_database_cache = {}
+        self._book_database_lock = threading.RLock()
 
     @contextmanager
     def connect(self):
@@ -548,9 +551,16 @@ class Database:
         safe_id = "".join(char for char in book_id if char.isalnum() or char in "-_")
         if not safe_id:
             raise ValueError("Invalid book id")
-        database = BookDatabase(self.path.parent / "novel" / safe_id / "extraction.sqlite3", self)
-        database.initialize()
-        return database
+        with self._book_database_lock:
+            database = self._book_database_cache.get(safe_id)
+            if database is None:
+                database = BookDatabase(
+                    self.path.parent / "novel" / safe_id / "extraction.sqlite3",
+                    self,
+                )
+                database.initialize()
+                self._book_database_cache[safe_id] = database
+            return database
 
     def migrate_book_databases(self):
         """Move existing book-scoped rows out of the shared database."""
