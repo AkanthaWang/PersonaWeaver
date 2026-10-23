@@ -63,6 +63,14 @@ export function usageLabel(usage) {
   return parts.length ? parts.join(" · ") + " tokens" : "已记录";
 }
 
+export function phaseLabel(phase) {
+  return {
+    restore: "恢复分支状态", context: "整理上下文", knowledge: "查询提取资料", plan: "检查资料缺口",
+    tools: "补充检索资料", draft: "生成草稿", review: "校验角色与剧情", revise: "修订设定冲突",
+    publish: "发布正文", memory: "保存分支状态", blocked: "一致性校验未通过",
+  }[phase] || "正在准备";
+}
+
 export class GenerationSession {
   constructor({ api, fetchImpl = (...args) => globalThis.fetch(...args), onEvent }) {
     Object.assign(this, { api, fetchImpl, onEvent, epoch: 0, active: null });
@@ -72,14 +80,15 @@ export class GenerationSession {
     if (name === "terminal") this.active.terminal = true;
     this.onEvent(name, data);
   }
-  async send(conversationId, payload) {
+  async send(conversationId, payload, resume = false) {
     const epoch = ++this.epoch;
     this.active?.controller.abort();
     const controller = new AbortController();
     this.active = { conversationId, requestId: payload.request_id, controller, terminal: false };
     const base = (this.api.defaults.baseURL || "/api/v1").replace(/\/$/, "");
     try {
-      const response = await this.fetchImpl(`${base}/conversations/${conversationId}/messages/stream`, {
+      const endpoint = resume ? `generations/${payload.request_id}/resume` : "messages/stream";
+      const response = await this.fetchImpl(`${base}/conversations/${conversationId}/${endpoint}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload), signal: controller.signal, credentials: "same-origin",
       });

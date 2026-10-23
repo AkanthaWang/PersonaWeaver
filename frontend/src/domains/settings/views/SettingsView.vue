@@ -40,6 +40,10 @@
             <div class="two-column"><el-form-item label="模型 ID"><el-input v-model="model.model" maxlength="120" placeholder="服务商提供的模型 ID" required /></el-form-item><el-form-item label="显示名称"><el-input v-model="model.name" maxlength="80" placeholder="显示名称" /></el-form-item></div>
             <div class="fill-row"><el-button plain size="small" @click="fillModelInfo">填入模型信息</el-button><span v-if="model.has_api_key" class="saved-hint">服务商密钥已配置</span></div>
             <section v-if="modelType === 'llm'" class="capability-section"><div class="section-title-row"><h3>能力</h3><span class="muted">模型说明保存在当前浏览器</span></div><el-checkbox v-model="capabilities.reasoning">推理 / 思考</el-checkbox><el-checkbox v-model="capabilities.image">图片输入</el-checkbox></section>
+            <section v-if="modelType === 'llm'" class="capability-section">
+              <div class="section-title-row"><h3>工具调用</h3><el-tag :type="selectedProfile?.tool_support === 'native' ? 'success' : 'info'" effect="plain">{{ selectedProfile?.tool_support === 'native' ? '原生工具已验证' : '严格 JSON 兼容' }}</el-tag></div>
+              <el-button :loading="toolsTesting" :disabled="testing || saving || toolsTesting" @click="testTools">测试工具能力</el-button>
+            </section>
             <section v-if="modelType === 'llm'" class="spec-section"><div class="section-title-row"><h3>模型规格</h3><button class="link-button" type="button" @click="showPricing = !showPricing">{{ showPricing ? '收起价格' : '编辑价格' }}</button></div><div class="two-column"><el-form-item label="上下文窗口（tokens）"><el-input-number v-model="model.context_window" :min="128" :max="2000000" :step="1024" class="wide-control" /></el-form-item><el-form-item label="最大输出 tokens"><el-input-number v-model="model.max_tokens" :min="128" :max="16384" :step="128" class="wide-control" /></el-form-item></div><div v-if="showPricing" class="pricing-grid"><label>输入 / 1M tokens<el-input v-model="pricing.input" placeholder="$0" /></label><label>输出 / 1M tokens<el-input v-model="pricing.output" placeholder="$0" /></label><label>缓存读取<el-input v-model="pricing.cacheRead" placeholder="$0" /></label><label>缓存写入<el-input v-model="pricing.cacheWrite" placeholder="$0" /></label></div><div v-else class="pricing-summary"><span>输入 <strong>{{ pricing.input || '$0' }}</strong></span><span>输出 <strong>{{ pricing.output || '$0' }}</strong></span><span>缓存读取 <strong>{{ pricing.cacheRead || '$0' }}</strong></span><span>缓存写入 <strong>{{ pricing.cacheWrite || '$0' }}</strong></span></div></section>
             <el-collapse class="advanced-collapse"><el-collapse-item title="高级设置" name="advanced"><div v-if="modelType === 'llm'" class="two-column"><el-form-item label="Temperature"><el-input-number v-model="model.temperature" :min="0" :max="2" :step="0.1" class="wide-control" /></el-form-item><el-form-item label="Top P"><el-input-number v-model="model.top_p" :min="0.01" :max="1" :step="0.05" class="wide-control" /></el-form-item></div><el-form-item label="请求超时（秒）"><el-input-number v-model="model.timeout_seconds" :min="5" :max="300" :step="5" /></el-form-item></el-collapse-item></el-collapse>
             <div class="editor-actions sticky-actions"><el-button type="primary" native-type="submit" :loading="saving" :disabled="testing">保存</el-button><el-button v-if="modelType === 'llm' && selectedProfileId && !selectedIsActive" @click="activateSelected">设为当前对话模型</el-button></div>
@@ -120,6 +124,7 @@ const loading = ref(false);
 const saving = ref(false);
 const profileBusy = ref(false);
 const testing = ref(false);
+const toolsTesting = ref(false);
 const key = ref("");
 const clearKey = ref(false);
 const testResult = ref("");
@@ -175,6 +180,19 @@ function saveModelNotes(id) {
   localStorage.setItem("personaweaver.model-notes." + id, JSON.stringify({ capabilities, pricing, context_window: model.context_window, window_migrated: true }));
 }
 async function testModel() { if (testing.value) return; testing.value = true; testResult.value = ""; let message = "", ok = false; try { if (!await saveModel()) return; const result = await testModelProfile(selectedProfileId.value); ok = true; message = result.response; } catch (err) { message = err.message; } finally { try { await loadProfiles(); } catch (err) { report(err); } testOk.value = ok; testResult.value = message; testing.value = false; } }
+async function testTools() {
+  if (toolsTesting.value) return;
+  try {
+    await ElMessageBox.confirm("将保存当前配置并发送一次模型工具能力探测，可能产生提供商费用。是否继续？", "测试工具能力", { type: "warning", confirmButtonText: "确认测试", cancelButtonText: "取消" });
+  } catch { return; }
+  toolsTesting.value = true;
+  try {
+    if (!await saveModel()) return;
+    const result = await api.post(`/settings/models/${selectedProfileId.value}/test-tools`);
+    await loadProfiles();
+    testOk.value = result.ok; testResult.value = result.message;
+  } catch (err) { report(err); } finally { toolsTesting.value = false; }
+}
 async function saveProfile() { profileBusy.value = true; try { auth.user = await api.patch("/auth/profile", profile); ElMessage.success("资料已保存"); } catch (err) { report(err); } finally { profileBusy.value = false; } }
 async function uploadAvatar(event) { const file = event.target.files[0]; if (!file) return; if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 2 * 1024 * 1024) { report(new Error("请选择不超过 2 MB 的 PNG、JPG 或 WebP 图片")); event.target.value = ""; return; } avatarBusy.value = true; try { const result = await upload("/auth/avatar", file); auth.user.avatar = result.avatar_url; ElMessage.success("头像已保存"); } catch (err) { report(err); } finally { avatarBusy.value = false; event.target.value = ""; } }
 async function saveRole() { roleBusy.value = true; try { await api.patch("/auth/role", { prompt: prompt.value, avatar: auth.user?.avatar || null }); auth.user.prompt = prompt.value; ElMessage.success("角色设定已保存"); } catch (err) { report(err); } finally { roleBusy.value = false; } }

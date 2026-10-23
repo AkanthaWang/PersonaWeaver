@@ -8,6 +8,7 @@
     <el-empty v-if="!sourceList.length" description="此轮没有检索材料" />
     <article v-for="item in sourceList" :key="item.id" class="conversation-reference">
       <strong>{{ item.title }}</strong>
+      <el-tag size="small" effect="plain">{{ item.kind === 'chapter' ? '原文补查' : '提取资料' }}</el-tag>
       <small v-if="item.chapter_no">第 {{ item.chapter_no }} 章 · {{ item.chapter_title }}</small>
       <p>{{ item.quote || item.content }}</p>
       <el-button v-if="item.chapter_id" plain size="small" :icon="Reading" @click="readSource(item)">查看原文</el-button>
@@ -49,11 +50,12 @@
   </el-dialog>
   <el-drawer v-model="showSettings" title="会话设置" size="min(100vw, 420px)" append-to-body>
     <el-form label-position="top" @submit.prevent="saveSettings">
-      <el-form-item label="对话模式"><el-radio-group v-model="settings.mode"><el-radio-button value="assistant">创作助手</el-radio-button><el-radio-button value="roleplay">角色扮演</el-radio-button></el-radio-group></el-form-item>
-      <el-form-item label="关联作品"><el-select v-model="settings.book_id" clearable filterable :disabled="Boolean(conversation.card_id)" class="full-width"><el-option v-for="book in books" :key="book.book_id" :value="book.book_id" :label="book.title" /></el-select></el-form-item>
+      <el-form-item label="对话模式"><el-radio-group v-model="settings.mode"><el-radio-button value="assistant">创作助手</el-radio-button><el-radio-button value="roleplay">角色扮演</el-radio-button><el-radio-button value="writing">内容写作</el-radio-button></el-radio-group></el-form-item>
+      <el-form-item v-if="settings.mode === 'writing'" label="正文格式"><el-radio-group v-model="settings.writing_format"><el-radio-button value="novel">小说片段</el-radio-button><el-radio-button value="screenplay">剧本场景</el-radio-button></el-radio-group></el-form-item>
+      <el-form-item label="关联作品"><el-select v-model="settings.book_id" clearable filterable :disabled="Boolean(conversation.card_id)" class="full-width" @change="filterCast"><el-option v-for="book in books" :key="book.book_id" :value="book.book_id" :label="book.title" /></el-select></el-form-item>
+      <el-form-item v-if="settings.mode === 'writing'" label="出场人物"><el-select v-model="settings.character_ids" multiple filterable :multiple-limit="12" class="full-width"><el-option v-for="card in castCards" :key="card.id" :value="card.id" :label="card.name" /></el-select></el-form-item>
       <el-form-item label="作品知识检索"><el-switch v-model="settings.knowledge_enabled" aria-label="作品知识检索" /></el-form-item>
       <el-form-item label="回复后自动保存记忆"><el-switch v-model="settings.memory_enabled" aria-label="自动保存记忆" /></el-form-item>
-      <el-alert title="检索当前有效作品资料，不提供章节级防剧透。自动记忆提炼会额外调用本轮模型。" type="info" :closable="false" />
       <div class="dialog-actions"><el-button type="primary" native-type="submit" :loading="saving" :disabled="disabled">保存设置</el-button></div>
     </el-form>
   </el-drawer>
@@ -68,10 +70,11 @@ import ChapterReader from "../../documents/components/ChapterReader.vue";
 const props = defineProps({ conversation: { type: Object, required: true }, disabled: Boolean, sources: { type: Array, default: () => [] } });
 const emit = defineEmits(["updated"]);
 const showSources = ref(false), showMemories = ref(false), showReader = ref(false), showEditor = ref(false), showSettings = ref(false);
-const sourceList = ref([]), readerSource = ref(null), books = ref([]), saving = ref(false), editing = ref(null);
+const sourceList = ref([]), readerSource = ref(null), books = ref([]), cards = ref([]), saving = ref(false), editing = ref(null);
 const memoryData = ref({ items: [], jobs: [] });
 const memoryForm = reactive({ category: "experience", key: "", content: "", locked: true, source_ids: [] });
-const settings = reactive({ mode: "assistant", book_id: null, knowledge_enabled: true, memory_enabled: true });
+const settings = reactive({ mode: "assistant", book_id: null, knowledge_enabled: true, memory_enabled: true, writing_format: "novel", character_ids: [] });
+const castCards = computed(() => cards.value.filter(c => c.book_id === settings.book_id));
 const categories = { scene: "场景", experience: "经历", relationship: "关系", promise: "承诺", open_item: "未完成" };
 const failedJobs = computed(() => memoryData.value.jobs.filter(j => j.status === "failed"));
 const activeJobs = computed(() => memoryData.value.jobs.filter(j => ["queued", "running"].includes(j.status)));
@@ -119,9 +122,13 @@ async function retryJob(job) {
 }
 async function openSettings() {
   Object.assign(settings, { mode: props.conversation.mode, book_id: props.conversation.book_id,
-    knowledge_enabled: Boolean(props.conversation.knowledge_enabled), memory_enabled: Boolean(props.conversation.memory_enabled) });
+    knowledge_enabled: Boolean(props.conversation.knowledge_enabled), memory_enabled: Boolean(props.conversation.memory_enabled),
+    writing_format: props.conversation.writing_format || "novel", character_ids: props.conversation.character_ids || [] });
   showSettings.value = true;
-  try { books.value = (await api.get("/books")).books || []; } catch (err) { report(err); }
+  try {
+    const [bookData, cardData] = await Promise.all([api.get("/books"), api.get("/cards")]);
+    books.value = bookData.books || []; cards.value = cardData.cards || [];
+  } catch (err) { report(err); }
 }
 async function saveSettings() {
   if (saving.value || props.disabled) return;
@@ -135,6 +142,7 @@ async function saveSettings() {
 watch(() => [props.conversation.id, props.conversation.active_leaf_id], loadMemories, { immediate: true });
 watch(() => props.sources, value => { if (!showSources.value) sourceList.value = value; }, { immediate: true });
 watch(() => props.conversation.id, () => { showEditor.value = false; showSettings.value = false; showSources.value = false; showMemories.value = false; });
+function filterCast() { settings.character_ids = settings.character_ids.filter(id => castCards.value.some(c => c.id === id)); }
 onBeforeUnmount(() => { memoryEpoch++; clearTimeout(poll); });
 </script>
 

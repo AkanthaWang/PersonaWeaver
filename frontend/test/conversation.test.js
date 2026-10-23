@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readEventStream, timelineForPath, GenerationSession, usageLabel } from "../src/domains/conversation/stream.js";
+import { readEventStream, timelineForPath, GenerationSession, usageLabel, phaseLabel } from "../src/domains/conversation/stream.js";
 
 function body(text, size = 1) {
   const bytes = new TextEncoder().encode(text);
@@ -71,4 +71,25 @@ test("provider usage is distinct from estimates and supports protocol-specific f
   assert.equal(usageLabel({ input_tokens: 12, output_tokens: 0 }), "输入 12 · 输出 0 tokens");
   assert.equal(usageLabel({ prompt_eval_count: 25, eval_count: 8 }), "输入 25 · 输出 8 tokens");
   assert.equal(usageLabel({ unknown: 7 }), "已记录");
+});
+test("explicit recovery calls the resume endpoint, never starts a new generation", async () => {
+  const requests = [], events = [];
+  const session = new GenerationSession({
+    api: { defaults: { baseURL: "/api/v1" } },
+    fetchImpl: async (url, options) => {
+      requests.push([url, options.method]);
+      return { ok: true, body: body(
+        'event: phase\ndata: {"phase":"review"}\n\nevent: terminal\ndata: {"status":"completed"}\n\n') };
+    },
+    onEvent: (...args) => events.push(args),
+  });
+  await session.send("c", { request_id: "r" }, true);
+  assert.deepEqual(requests, [["/api/v1/conversations/c/generations/r/resume", "POST"]]);
+  assert.equal(events[0][1].phase, "review");
+  assert.equal(events.at(-1)[1].status, "completed");
+});
+test("stage progress is distinct from content and blocked publication", () => {
+  assert.equal(phaseLabel("draft"), "生成草稿");
+  assert.equal(phaseLabel("review"), "校验角色与剧情");
+  assert.equal(phaseLabel("blocked"), "一致性校验未通过");
 });

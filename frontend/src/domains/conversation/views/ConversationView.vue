@@ -15,11 +15,13 @@
             <img v-if="selectedCard" class="card-mark card-mark-image" :src="characterAvatarUrl(selectedCard.name)" :alt="`${selectedCard.name}头像`" />
             <h2>{{ selected?.title || '选择一个会话' }}</h2>
             <el-tag v-if="selected?.card_id" size="small" effect="plain" type="warning">{{ selectedCard?.name || '角色卡' }}</el-tag>
+            <el-tag v-if="selected?.mode === 'writing'" size="small" effect="plain">{{ selected.writing_format === 'screenplay' ? '剧本场景' : '小说片段' }}</el-tag>
           </div>
           <p v-if="selected" class="muted heading-meta">{{ messages.length ? `${messages.length} 条消息` : '新对话' }}<span v-if="activeChildCount"> · 当前节点有 {{ activeChildCount }} 个分支</span><span v-if="selected.tokens"> · 上下文 {{ selected.tokens.toLocaleString() }} tokens</span></p>
         </div>
         <div v-if="selected" class="chat-heading-actions">
           <ConversationResources ref="resources" :conversation="selected" :disabled="sending || uncertain" :sources="sources" @updated="resourcesUpdated" />
+          <HarnessTrace :conversation-id="selected.id" :request-id="traceRequestId" :live-events="traceEvents" :run="runState" />
           <el-button v-if="selectedCard" text class="heading-link" :icon="InfoFilled" @click="showCard = true">角色设定</el-button>
           <el-dropdown v-if="tree.length" trigger="click" class="branch-dropdown" :disabled="sending || uncertain" @command="selectBranch">
             <el-button text class="branch-trigger" :disabled="sending || uncertain"><span class="branch-trigger-dot" />{{ activeNodeId ? '当前分支' : '新分支起点' }}<small>{{ tree.length }} 节点</small><ArrowDown /></el-button>
@@ -58,11 +60,12 @@
               </div>
             </article>
           </template>
-          <div v-if="sending" class="typing-indicator"><span /><span /><span />{{ nativeStreaming === false ? '此协议返回整段回复，等待模型完成' : '正在生成回复' }}</div>
+          <div v-if="sending" class="typing-indicator" role="status"><span /><span /><span />{{ phaseLabel(currentPhase) }}</div>
         </template>
       </section>
       <div v-if="selected" class="generation-controls">
         <el-button v-if="sending" type="danger" plain :icon="VideoPause" :loading="stopping" @click="stop">停止生成</el-button>
+        <el-button v-else-if="runState?.resumable" plain :icon="Refresh" @click="resumeRun">恢复本次运行</el-button>
         <el-button v-else-if="lastAttempt && error" plain :icon="Refresh" @click="retry">{{ uncertain ? '重连本次请求（不重复生成）' : '重新生成（新请求）' }}</el-button>
         <small v-if="budgetUsage" class="muted">输入估算 {{ budgetUsage.input_tokens.toLocaleString() }} / {{ budgetUsage.available_input.toLocaleString() }} · 预留输出 {{ budgetUsage.max_output.toLocaleString() }}</small>
         <small v-if="actualUsage" class="muted" :title="JSON.stringify(actualUsage)">提供商实际：{{ usageLabel(actualUsage) }}</small>
@@ -70,7 +73,20 @@
       <form class="composer pi-composer" @submit.prevent="send"><div v-if="error" class="composer-error" role="alert" aria-live="polite"><el-icon><WarningFilled /></el-icon><span>{{ error }}</span></div><div class="composer-box"><el-input v-model="draft" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" resize="none" maxlength="12000" :disabled="!selected || sending" :placeholder="composerPlaceholder" aria-label="消息" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send" /><div class="composer-toolbar"><span class="composer-toolbar-status" :class="{ 'is-ready': canSend }">{{ sending ? '正在生成回复…' : canSend ? '准备发送' : selected ? '输入消息后发送' : '先选择一个会话' }}</span><el-button type="primary" :icon="Promotion" native-type="submit" :disabled="!canSend" :loading="sending" :aria-label="sending ? '正在发送消息' : '发送消息'">发送</el-button></div></div><div class="composer-footer"><el-dropdown trigger="click" popper-class="model-popover" class="model-menu" :disabled="!selected || sending" @command="changeModel"><button type="button" class="model-menu-trigger" :class="{ 'is-loading': profilesLoading }" :disabled="!selected || sending || profilesLoading" :title="activeModelLabel"><span class="model-menu-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7z" /><circle cx="12" cy="12" r="2.6" /><path d="M12 9.4V6.2M12 17.8v-3.2M14.3 13.3l2.7 1.6M7 9.1l2.7 1.6" /></svg></span><span class="model-menu-copy"><span class="model-menu-name">{{ modelMenuName }}</span><small v-if="activeModel">{{ activeModel.model }}</small></span><ArrowDown class="model-menu-caret"  /></button><template #dropdown><div class="model-popover-head"><strong>切换模型</strong><small>切换后会绑定到当前会话</small></div><el-dropdown-menu class="model-menu-list"><el-dropdown-item v-for="profile in profiles" :key="profile.id" :command="profile.id" :class="{ 'model-menu-active': profile.id === selectedProfileId }"><span class="model-menu-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7z" /><circle cx="12" cy="12" r="2.6" /></svg></span><span class="model-menu-option"><span class="model-menu-option-name">{{ profile.name || profile.model }}</span><small>{{ profile.model }}</small></span><el-icon v-if="profile.id === selectedProfileId" class="model-menu-check"><Check /></el-icon></el-dropdown-item><el-dropdown-item v-if="!profiles.length" disabled>暂无可用模型</el-dropdown-item></el-dropdown-menu><div class="model-popover-foot"><button type="button" class="model-popover-action" @click="goSettings">模型设置</button><button type="button" class="model-popover-action" disabled title="待开放">上下文长度</button></div></template></el-dropdown><div v-if="selected" class="context-meter" :class="contextLevel" :title="`已使用 ${estimateTokens.toLocaleString()} tokens`"><span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill" :style="{ width: `${contextPercent}%` }" /></span><span class="context-meter-value">{{ estimateTokens.toLocaleString() }} tokens</span></div><span v-else class="context-meter-empty">选择会话后开始</span><div class="composer-footer-right"><span class="composer-hint">Ctrl / ⌘ + Enter 发送</span><span class="composer-count" :class="draftCountClass">{{ draft.length.toLocaleString() }} / 12,000</span></div></div></form>
     </section>
   </div>
-  <el-dialog v-model="showCreate" title="新建角色会话" width="480px" class="conversation-dialog"><el-form label-position="top" @submit.prevent="create"><el-form-item label="会话标题"><el-input v-model="newTitle" maxlength="100" placeholder="例如：雨夜里的重逢" /></el-form-item><el-form-item label="角色卡"><el-select v-model="newCard" clearable filterable class="full-width" placeholder="选择一个角色（可选）"><el-option v-for="card in cards" :key="card.id" :label="`${card.name} · ${card.book_title}`" :value="card.id" /></el-select></el-form-item><el-form-item label="使用模型"><el-select v-model="newProfile" filterable class="full-width" placeholder="选择模型"><el-option v-for="profile in profiles" :key="profile.id" :label="profileLabel(profile)" :value="profile.id" /></el-select><small class="form-help">模型可以在对话中随时切换，切换后会绑定到当前会话。</small></el-form-item><div class="dialog-actions"><el-button @click="showCreate = false">取消</el-button><el-button type="primary" :icon="Plus" native-type="submit" :loading="creating">创建会话</el-button></div></el-form></el-dialog>
+  <el-dialog v-model="showCreate" title="新建创作会话" width="min(92vw, 480px)" class="conversation-dialog">
+    <el-form label-position="top" @submit.prevent="create">
+      <el-form-item label="会话标题"><el-input v-model="newTitle" maxlength="100" placeholder="例如：雨夜里的重逢" /></el-form-item>
+      <el-form-item label="创作模式"><el-radio-group v-model="newMode"><el-radio-button value="assistant">创作助手</el-radio-button><el-radio-button value="roleplay">角色扮演</el-radio-button><el-radio-button value="writing">内容写作</el-radio-button></el-radio-group></el-form-item>
+      <template v-if="newMode === 'writing'">
+        <el-form-item label="正文格式"><el-radio-group v-model="newFormat"><el-radio-button value="novel">小说片段</el-radio-button><el-radio-button value="screenplay">剧本场景</el-radio-button></el-radio-group></el-form-item>
+        <el-form-item label="关联作品"><el-select v-model="newBook" clearable filterable class="full-width" @change="newCast = []"><el-option v-for="book in books" :key="book.book_id" :value="book.book_id" :label="book.title" /></el-select></el-form-item>
+        <el-form-item label="出场人物"><el-select v-model="newCast" multiple filterable :multiple-limit="12" class="full-width"><el-option v-for="card in cards.filter(c => c.book_id === newBook)" :key="card.id" :value="card.id" :label="card.name" /></el-select></el-form-item>
+      </template>
+      <el-form-item v-else label="角色卡"><el-select v-model="newCard" clearable filterable class="full-width" placeholder="选择一个角色（可选）"><el-option v-for="card in cards" :key="card.id" :label="`${card.name} · ${card.book_title}`" :value="card.id" /></el-select></el-form-item>
+      <el-form-item label="使用模型"><el-select v-model="newProfile" filterable class="full-width" placeholder="选择模型"><el-option v-for="profile in profiles" :key="profile.id" :label="profileLabel(profile)" :value="profile.id" /></el-select></el-form-item>
+      <div class="dialog-actions"><el-button @click="showCreate = false">取消</el-button><el-button type="primary" :icon="Plus" native-type="submit" :loading="creating">创建会话</el-button></div>
+    </el-form>
+  </el-dialog>
   <el-drawer v-model="showCard" :title="selectedCard?.name || '角色设定'" size="420px" class="card-drawer"><template v-if="selectedCard"><p class="card-drawer-intro">{{ selectedCard.intro || '暂无简介' }}</p><dl class="card-drawer-meta"><dt>所属作品</dt><dd>{{ selectedCard.book_title || '未关联' }}</dd></dl><div class="card-drawer-body"><pre class="document-text">{{ selectedCard.content || '该角色卡还没有详细设定。' }}</pre></div><div class="card-drawer-actions"><RouterLink to="/characters"><el-button plain :icon="EditPen">前往角色库编辑</el-button></RouterLink></div></template></el-drawer>
   </div>
 </template>
@@ -86,21 +102,25 @@ import { api } from "../../../api/client";
 import { useAuthStore } from "../../../stores/auth";
 import { report, confirmDelete } from "../../../lib/ui";
 import { characterAvatarUrl } from "../../../lib/avatar";
-import { GenerationSession, timelineForPath, usageLabel } from "../stream.js";
+import { GenerationSession, timelineForPath, usageLabel, phaseLabel } from "../stream.js";
 import ConversationResources from "../components/ConversationResources.vue";
+import HarnessTrace from "../components/HarnessTrace.vue";
 const auth = useAuthStore(), route = useRoute(), router = useRouter();
-const conversations = ref([]), cards = ref([]), profiles = ref([]), model = ref(null), selected = ref(null), messages = ref([]), tree = ref([]), draft = ref(""), error = ref("");
+const conversations = ref([]), cards = ref([]), books = ref([]), profiles = ref([]), model = ref(null), selected = ref(null), messages = ref([]), tree = ref([]), draft = ref(""), error = ref("");
+const newMode = ref("assistant"), newFormat = ref("novel"), newBook = ref(null), newCast = ref([]);
 const conversationFilter = ref(""), selectedProfileId = ref(""), newProfile = ref(""), newTitle = ref(""), newCard = ref("");
 const loading = ref(false), sending = ref(false), creating = ref(false), profilesLoading = ref(false), timeline = ref(null), showCreate = ref(false), showCard = ref(false), pendingMessage = ref(null);
 const pendingAssistant = ref(null), budgetUsage = ref(null), actualUsage = ref(null), nativeStreaming = ref(true), stopping = ref(false), lastAttempt = ref(null), uncertain = ref(false);
 const resources = ref(null), sources = ref([]);
+const currentPhase = ref("restore"), traceEvents = ref([]), runState = ref(null), currentRequestId = ref("");
+const traceRequestId = computed(() => currentRequestId.value || [...messages.value].reverse().find(m => m.metadata?.request_id)?.metadata.request_id || "");
 const carrySummary = ref(false);
 let previewEpoch = 0, previewTimer;
 const generation = new GenerationSession({ api, onEvent: receiveEvent });
 const activeNodeId = computed(() => selected.value?.active_leaf_id || null), activePath = computed(() => new Set((selected.value?.context || messages.value).map((message) => message.id).filter(Boolean))), activeChildCount = computed(() => activeNodeId.value ? tree.value.filter((node) => node.parent_id === activeNodeId.value).length : 0);
 const filteredConversations = computed(() => { const query = conversationFilter.value.trim().toLowerCase(); return query ? conversations.value.filter((item) => item.title.toLowerCase().includes(query)) : conversations.value; });
 const selectedCard = computed(() => cards.value.find((card) => card.id === selected.value?.card_id));
-const composerPlaceholder = computed(() => !selected.value ? "先选择一个会话…" : selectedCard.value ? `对「${selectedCard.value.name}」说些什么…` : "写下你的下一句话…");
+const composerPlaceholder = computed(() => !selected.value ? "先选择一个会话…" : selected.value.mode === "writing" ? "写下这一段的目标、场景和剧情要求…" : selectedCard.value ? `对「${selectedCard.value.name}」说些什么…` : "写下你的下一句话…");
 const canSend = computed(() => Boolean(selected.value && draft.value.trim() && !sending.value && !uncertain.value && !profilesLoading.value));
 const draftPercent = computed(() => Math.round((draft.value.length / 12000) * 100));
 const draftCountClass = computed(() => draftPercent.value >= 100 ? "is-limit" : draftPercent.value >= 90 ? "is-warning" : "");
@@ -123,12 +143,22 @@ function applyConversation(payload) { selected.value = payload; messages.value =
 function resourcesUpdated(payload) { applyConversation(payload); preview(); }
 async function refresh() { conversations.value = (await api.get("/conversations")).conversations; }
 async function loadProfiles() { profilesLoading.value = true; try { const result = await api.get("/settings/models"); profiles.value = (result.models || []).filter((profile) => (profile.model_type || "llm") === "llm"); newProfile.value = profiles.value.find((profile) => profile.active)?.id || profiles.value[0]?.id || ""; } finally { profilesLoading.value = false; } }
-async function select(id) { if (sending.value || loading.value) return; loading.value = true; error.value = ""; try { applyConversation(await api.get(`/conversations/${id}`)); draft.value = ""; await router.replace({ path: "/chat", query: { conversation: id } }); await scrollBottom(); } catch (err) { report(err); } finally { loading.value = false; } }
-async function selectNode(nodeId) { if (!selected.value || sending.value || uncertain.value || loading.value || activeNodeId.value === nodeId) return; loading.value = true; error.value = ""; try { applyConversation(await api.patch(`/conversations/${selected.value.id}/active-node`, { node_id: nodeId, summary: carrySummary.value })); carrySummary.value = false; await scrollBottom(); } catch (err) { report(err); } finally { loading.value = false; } }
+async function select(id) { if (sending.value || loading.value) return; loading.value = true; error.value = ""; try { applyConversation(await api.get(`/conversations/${id}`)); draft.value = ""; await nextTick(); await loadRun(); await router.replace({ path: "/chat", query: { conversation: id } }); await scrollBottom(); } catch (err) { report(err); } finally { loading.value = false; } }
+async function selectNode(nodeId) { if (!selected.value || sending.value || uncertain.value || loading.value || activeNodeId.value === nodeId) return; loading.value = true; error.value = ""; try { applyConversation(await api.patch(`/conversations/${selected.value.id}/active-node`, { node_id: nodeId, summary: carrySummary.value })); carrySummary.value = false; await loadRun(); await scrollBottom(); } catch (err) { report(err); } finally { loading.value = false; } }
+async function loadRun() {
+  const id = selected.value.id;
+  const { runs } = await api.get(`/conversations/${id}/generations`);
+  if (selected.value?.id !== id) return;
+  const run = runs.find(r => r.assistant_node_id ? activePath.value.has(r.assistant_node_id) : r.parent_id === activeNodeId.value);
+  runState.value = run || null; currentRequestId.value = run?.request_id || ""; traceEvents.value = [];
+  if (run?.resumable) { error.value = run.error || "运行已中断，可显式恢复"; draft.value = run.message; }
+  if (run) lastAttempt.value = { message: run.message, parent_id: run.parent_id,
+    profile_id: selectedProfileId.value || null, request_id: run.request_id };
+}
 function selectBranch(command) { selectNode(command === "__root__" ? null : command); }
 async function changeModel(profileId) { if (!selected.value || sending.value || uncertain.value || !profileId || profileId === selectedProfileId.value) return; const previousProfileId = selectedProfileId.value; try { const result = await api.patch(`/conversations/${selected.value.id}`, { profile_id: profileId }); selected.value.profile_id = result.profile_id || profileId; selectedProfileId.value = result.profile_id || profileId; ElMessage.success(`已切换到 ${profileLabel(profiles.value.find((profile) => profile.id === profileId) || {})}`); } catch (err) { selectedProfileId.value = previousProfileId; report(err); } }
 async function goSettings() { await router.push("/settings"); }
-async function create() { if (creating.value) return; creating.value = true; try { const item = await api.post("/conversations", { title: newTitle.value.trim() || "新会话", card_id: newCard.value || null, profile_id: newProfile.value || null }); await refresh(); showCreate.value = false; newTitle.value = ""; newCard.value = ""; await select(item.id); } catch (err) { report(err); } finally { creating.value = false; } }
+async function create() { if (creating.value) return; creating.value = true; try { const item = await api.post("/conversations", { title: newTitle.value.trim() || "新会话", mode: newMode.value, card_id: newMode.value === "writing" ? null : newCard.value || null, profile_id: newProfile.value || null, ...(newMode.value === "writing" ? { book_id: newBook.value, writing_format: newFormat.value, character_ids: newCast.value } : {}) }); await refresh(); showCreate.value = false; newTitle.value = ""; newCard.value = ""; newCast.value = []; await select(item.id); } catch (err) { report(err); } finally { creating.value = false; } }
 async function send() {
   if (!canSend.value) return;
   lastAttempt.value = { message: draft.value.trim(), parent_id: activeNodeId.value,
@@ -137,6 +167,8 @@ async function send() {
 }
 async function startAttempt() {
   sending.value = true; error.value = ""; uncertain.value = false; actualUsage.value = null;
+  currentPhase.value = "restore"; traceEvents.value = []; runState.value = null;
+  currentRequestId.value = lastAttempt.value.request_id;
   pendingMessage.value = { role: "user", content: lastAttempt.value.message };
   pendingAssistant.value = { role: "assistant", content: "" };
   draft.value = "";
@@ -144,6 +176,8 @@ async function startAttempt() {
   await generation.send(selected.value.id, lastAttempt.value);
 }
 function receiveEvent(name, data) {
+  if (["phase", "tool", "validation"].includes(name)) traceEvents.value.push({ event: name, payload: data });
+  if (name === "phase") currentPhase.value = data.phase;
   if (name === "start") nativeStreaming.value = data.capabilities?.native_streaming;
   if (name === "context") budgetUsage.value = data;
   if (name === "sources") sources.value = data;
@@ -153,7 +187,8 @@ function receiveEvent(name, data) {
       error.value = data.error; uncertain.value = true;
     } else {
       applyConversation(data);
-      actualUsage.value = Object.keys(data.usage || {}).length ? data.usage : null;
+      runState.value = data;
+      actualUsage.value = Object.keys(data.usage || {}).length ? aggregateUsage(data.usage) : null;
       error.value = data.status === "completed" ? (data.mirror_warning || data.memory_warning || "") : data.error || "生成已中断";
       if (!data.reply) draft.value = lastAttempt.value?.message || "";
       pendingMessage.value = null; pendingAssistant.value = null;
@@ -169,6 +204,24 @@ function receiveEvent(name, data) {
   }
 }
 async function stop() { if (stopping.value) return; stopping.value = true; try { await generation.stop(); } catch (err) { error.value = err.message; } finally { stopping.value = false; } }
+async function resumeRun() {
+  if (sending.value || !runState.value?.resumable) return;
+  sending.value = true; error.value = ""; uncertain.value = false;
+  pendingMessage.value = { role: "user", content: lastAttempt.value?.message || "" };
+  pendingAssistant.value = { role: "assistant", content: "" };
+  await generation.send(selected.value.id, { request_id: traceRequestId.value }, true);
+}
+function aggregateUsage(usage) {
+  if (!Object.values(usage).some(value => value && typeof value === "object")) return usage;
+  if (!Object.values(usage).some(value => Object.keys(value?.actual || {}).length)) return null;
+  const total = { input_tokens: 0, output_tokens: 0 };
+  for (const value of Object.values(usage)) {
+    const actual = value?.actual || {};
+    total.input_tokens += actual.input_tokens ?? actual.prompt_tokens ?? actual.prompt_eval_count ?? 0;
+    total.output_tokens += actual.output_tokens ?? actual.completion_tokens ?? actual.eval_count ?? 0;
+  }
+  return total;
+}
 async function retry() {
   if (sending.value || !lastAttempt.value) return;
   if (!uncertain.value) lastAttempt.value = { ...lastAttempt.value, request_id: crypto.randomUUID() };
@@ -190,6 +243,7 @@ watch([draft, selectedProfileId, () => selected.value?.active_leaf_id, () => sel
 watch(() => selected.value?.id, () => {
   generation.dispose(); uncertain.value = false; pendingMessage.value = null; pendingAssistant.value = null;
   lastAttempt.value = null; budgetUsage.value = null; actualUsage.value = null;
+  currentRequestId.value = ""; traceEvents.value = []; runState.value = null;
 });
 onBeforeUnmount(() => { clearTimeout(previewTimer); previewEpoch++; generation.dispose(); });
 async function copyMessage(message) { try { await navigator.clipboard.writeText(message.content || ""); ElMessage.success("已复制消息内容"); } catch { report(new Error("复制失败，请手动选择文本")); } }
@@ -197,7 +251,7 @@ async function labelNode(message) { let value; try { ({ value } = await ElMessag
 async function rename(item) { let value; try { ({ value } = await ElMessageBox.prompt("会话标题", "重命名", { inputValue: item.title, inputPattern: /^.{1,100}$/, inputErrorMessage: "请输入 1 到 100 个字符", confirmButtonText: "保存", cancelButtonText: "取消" })); } catch { return; } try { await api.patch(`/conversations/${item.id}`, { title: value }); await refresh(); if (selected.value?.id === item.id) selected.value.title = value; } catch (err) { report(err); } }
 async function remove(item) { if (!await confirmDelete(`删除会话“${item.title}”及全部消息？`)) return; try { await api.delete(`/conversations/${item.id}`); await refresh(); if (selected.value?.id === item.id) { selected.value = null; messages.value = []; tree.value = []; await router.replace("/chat"); if (conversations.value[0]) await select(conversations.value[0].id); } } catch (err) { report(err); } }
 watch(() => messages.value.length, () => scrollBottom());
-onMounted(async () => { try { const [cardResult, modelResult] = await Promise.all([api.get("/cards"), api.get("/settings/model")]); cards.value = cardResult.cards; model.value = modelResult; await loadProfiles(); await refresh(); const id = conversations.value.find((item) => item.id === route.query.conversation)?.id || conversations.value[0]?.id; if (id) await select(id); } catch (err) { report(err); } });
+onMounted(async () => { try { const [cardResult, modelResult, bookResult] = await Promise.all([api.get("/cards"), api.get("/settings/model"), api.get("/books")]); cards.value = cardResult.cards; books.value = bookResult.books; model.value = modelResult; await loadProfiles(); await refresh(); const id = conversations.value.find((item) => item.id === route.query.conversation)?.id || conversations.value[0]?.id; if (id) await select(id); } catch (err) { report(err); } });
 </script>
 
 <style scoped>
