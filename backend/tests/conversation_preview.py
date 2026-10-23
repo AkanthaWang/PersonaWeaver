@@ -6,17 +6,28 @@ import json
 from fastapi import Depends
 
 from backend.app.application import create_app
-from backend.app.ai.providers import conversation_stream as provider
+from backend.app.ai.providers import conversation_stream as provider, harness_tools
 from backend.app.core.dependencies import current_user, get_db
 from backend.app.db.database import now
 from backend.app.domains.knowledge.schemas import CharacterCreate, EvidenceCreate, FactCreate
 from backend.app.domains.knowledge.service import KnowledgeService
 
-calls = {"conversation": 0, "memory": 0}
+calls = {"conversation": 0, "memory": 0, "review": 0, "plan": 0}
+control = {"fail_review": False, "blocked": False}
 
 
 async def fake_stream(settings, messages, json_mode=False):
     if json_mode:
+        if "审核器" in messages[0]["content"]:
+            calls["review"] += 1
+            if control["fail_review"]:
+                control["fail_review"] = False
+                raise ValueError("测试审核连接中断")
+            yield {"text": json.dumps({
+                "passed": not control["blocked"],
+                "conflicts": [{"reason": "违反角色核心约束", "source_ids": []}] if control["blocked"] else [],
+            })}
+            return
         calls["memory"] += 1
         data = json.loads(messages[-1]["content"])
         yield {"text": json.dumps({"memories": [{
@@ -36,7 +47,15 @@ async def fake_stream(settings, messages, json_mode=False):
     yield {"usage": {"prompt_tokens": 120, "completion_tokens": 32, "total_tokens": 152}}
 
 
+async def fake_decide(settings, messages, tools, mode=None, *, probe=False):
+    calls["plan"] += 1
+    if probe:
+        return {"calls": [{"name": "search_knowledge", "arguments": {"query": "capability-check"}}]}, "native", {}
+    return {"calls": []}, "json", {}
+
+
 provider.stream = fake_stream
+harness_tools.decide = fake_decide
 app = create_app()
 
 
@@ -58,3 +77,9 @@ def setup(user=Depends(current_user), db=Depends(get_db)):
 @app.post("/test/stats")
 def stats():
     return calls
+
+
+@app.post("/test/control")
+def set_control(payload: dict):
+    control.update({k: bool(v) for k, v in payload.items() if k in control})
+    return control

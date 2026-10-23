@@ -77,6 +77,37 @@ class SettingsService:
             for function in FUNCTIONS
         }}
 
+    async def test_tools(self, user_id, profile_id):
+        """Explicit, single paid probe; never run during startup or ordinary chat."""
+        from backend.app.ai.providers import harness_tools
+        from backend.app.ai.harness.tools import definitions
+        profile = self.repo.profile_for_user(user_id, profile_id)
+        if not profile:
+            raise HTTPException(404, "模型配置不存在")
+        if profile["model_type"] != "llm":
+            raise HTTPException(422, "只有大语言模型支持工具调用")
+        settings = llm.settings_from_profile(profile)
+        support, message = "unverified", "工具能力未验证，继续使用严格 JSON"
+        try:
+            decision, mode, _ = await harness_tools.decide(
+                settings, [{"role": "user", "content":
+                            '请调用 search_knowledge，参数为 {"query":"capability-check"}，不要输出正文。'}],
+                definitions(), probe=True)
+            if mode == "native" and decision["calls"] == [{
+                "name": "search_knowledge", "arguments": {"query": "capability-check"},
+            }]:
+                support, message = "native", "原生工具调用验证通过"
+            else:
+                message = "模型未返回预期工具动作，继续使用严格 JSON"
+        except Exception as exc:
+            message = llm.error_message(exc)
+        changed = self.repo.execute(
+            "UPDATE model_profiles SET tool_support=? WHERE user_id=? AND id=? AND updated_at=?",
+            (support, user_id, profile_id, profile["updated_at"]))
+        if not changed:
+            raise HTTPException(409, "测试期间模型配置发生变化，请重新测试")
+        return {"ok": support == "native", "tool_support": support, "message": message}
+
     def save_selections(self, user_id: str, payload):
         values = payload.model_dump()
         # Validate and persist against the same database snapshot.
@@ -175,6 +206,7 @@ class SettingsService:
             test_status="untested" if changed else current["test_status"],
             test_message="" if changed else current["test_message"],
             tested_at=None if changed else current["tested_at"],
+            tool_support="unverified" if changed else current["tool_support"],
         )
         active = self.repo.active_profile_for_user(user_id)
         was_active = bool(active and active["id"] == profile_id)

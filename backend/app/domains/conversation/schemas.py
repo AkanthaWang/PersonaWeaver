@@ -8,7 +8,9 @@ class ConversationCreate(BaseModel):
     card_id: Optional[str] = None
     profile_id: Optional[str] = None
     book_id: Optional[str] = None
-    mode: Optional[Literal["assistant", "roleplay"]] = None
+    mode: Optional[Literal["assistant", "roleplay", "writing"]] = None
+    writing_format: Literal["novel", "screenplay"] = "novel"
+    character_ids: list[str] = Field(default_factory=list, max_length=12)
     knowledge_enabled: bool = True
     memory_enabled: bool = True
 
@@ -18,7 +20,9 @@ class ConversationUpdate(BaseModel):
     profile_id: Optional[str] = None
     name: Optional[str] = Field(default=None, max_length=100)
     book_id: Optional[str] = None
-    mode: Optional[Literal["assistant", "roleplay"]] = None
+    mode: Optional[Literal["assistant", "roleplay", "writing"]] = None
+    writing_format: Optional[Literal["novel", "screenplay"]] = None
+    character_ids: Optional[list[str]] = Field(default=None, max_length=12)
     knowledge_enabled: Optional[bool] = None
     memory_enabled: Optional[bool] = None
 

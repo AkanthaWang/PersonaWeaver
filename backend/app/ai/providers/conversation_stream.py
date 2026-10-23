@@ -161,10 +161,17 @@ async def stream(settings, messages, json_mode=False):
 
 
 async def complete(settings, messages, json_mode=False):
-    parts = []
+    text, _ = await complete_result(settings, messages, json_mode)
+    return text
+
+
+async def complete_result(settings, messages, json_mode=False):
+    parts, usage = [], {}
     async for event in stream(settings, messages, json_mode):
         parts.append(event.get("text", ""))
+        if event.get("usage"):
+            usage = event["usage"]
     text = "".join(parts).strip()
     if not text:
         raise ValueError("模型返回空回复")
-    return text
+    return text, usage

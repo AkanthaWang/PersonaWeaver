@@ -17,7 +17,7 @@ from backend.app.ai.providers.api_types import parse_json_payload
 from backend.app.db.database import identifier, now
 from backend.app.domains.settings import llm
 
-from .compaction import messages_tokens
+from .compaction import estimate_tokens, messages_tokens
 from .mirror import sync_mirror
 from .service import ConversationService, _conversation_lock
 
@@ -109,7 +109,8 @@ class BranchMemory:
                 "jobs": [j for j in jobs if j["id"] in visible_ids]}
 
     def context(self, cid, path):
-        return [{"id": row["memory_id"], "content": f"[{row['category']}] {row['memory_key']}：{row['content']}"}
+        return [{"id": row["memory_id"], "locked": bool(row["locked"]),
+                 "content": f"[{row['category']}] {row['memory_key']}：{row['content']}"}
                 for row in sorted(self.visible(cid, path), key=lambda v: (not v["locked"], -v["seq"]))]
 
     def validate_sources(self, path, source_ids):
@@ -215,10 +216,22 @@ class BranchMemory:
                             {"role": "user", "content": json.dumps({"messages": turns, "existing": previous}, ensure_ascii=False)}]
                 available = (settings.get("context_window") or 32768) - settings.get("max_tokens", 2048) - 256
                 while previous and messages_tokens(prompt()) > available:
-                    previous.pop(0)
+                    removable = next((i for i, v in enumerate(previous) if not v["locked"] and not v["deleted"]), None)
+                    if removable is None:
+                        break
+                    previous.pop(removable)
                 if messages_tokens(prompt()) > available:
                     raise ValueError("本轮消息超过记忆提炼预算，回复已保存")
-                text = await provider.complete(settings, prompt(), json_mode=True)
+                memory_prompt = prompt()
+                text, actual = await provider.complete_result(settings, memory_prompt, json_mode=True)
+                current = self.db.one("SELECT usage FROM conversation_runs WHERE conversation_id=? AND request_id=?",
+                                      (cid, run["request_id"]))
+                if current:
+                    usage = json.loads(current["usage"])
+                    usage["memory"] = {"actual": actual, "estimated_input": messages_tokens(memory_prompt),
+                                       "estimated_output": estimate_tokens(text)}
+                    self.db.execute("UPDATE conversation_runs SET usage=? WHERE conversation_id=? AND request_id=? AND cleared=0",
+                                    (json.dumps(usage, ensure_ascii=False), cid, run["request_id"]))
                 batch = ExtractedBatch.model_validate(parse_json_payload(text))
                 for item in batch.memories:
                     self.validate_sources(path, item.source_ids)
@@ -291,6 +304,23 @@ class BranchMemory:
         self.db.execute("UPDATE conversation_memory_jobs SET status='failed',error=?,updated_at=? "
                         "WHERE status IN ('queued','running')",
                         ("服务重启，未自动重新调用模型；可手动重试记忆提炼", now()))
+
+    async def settle(self, user_id, cid, path):
+        """Never begin another turn against an incomplete ancestor state."""
+        ids = {n["id"] for n in path}
+        jobs = [j for j in self.db.all(
+            "SELECT * FROM conversation_memory_jobs WHERE conversation_id=?", (cid,))
+            if j["id"] in ids and j["status"] != "completed"]
+        if any(j["status"] == "failed" for j in jobs):
+            raise ValueError("当前分支记忆沉淀失败，请先重试记忆任务或关闭自动保存记忆")
+        if jobs:
+            self.start_worker(user_id, cid)
+            await asyncio.shield(self.workers[cid])
+            unfinished = [j for j in self.db.all(
+                "SELECT * FROM conversation_memory_jobs WHERE conversation_id=?", (cid,))
+                if j["id"] in ids and j["status"] != "completed"]
+            if unfinished:
+                raise ValueError("当前分支记忆尚未完成，请重试记忆任务或关闭自动保存记忆")
 
     async def cancel_conversation(self, cid):
         task = self.workers.get(cid)

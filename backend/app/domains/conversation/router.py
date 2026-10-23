@@ -98,6 +98,11 @@ async def stream_message(conversation_id: str, payload: MessageRequest, request:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/conversations/{conversation_id}/generations")
+def recent_generations(conversation_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.recent(user["user_id"], conversation_id)
+
+
 @router.get("/conversations/{conversation_id}/generations/{request_id}")
 def generation_status(conversation_id: str, request_id: str, request: Request, user=Depends(current_user)):
     return request.app.state.conversation_engine.public(user["user_id"], conversation_id, request_id)
@@ -106,6 +111,18 @@ def generation_status(conversation_id: str, request_id: str, request: Request, u
 @router.post("/conversations/{conversation_id}/generations/{request_id}/cancel")
 async def cancel_generation(conversation_id: str, request_id: str, request: Request, user=Depends(current_user)):
     return await request.app.state.conversation_engine.cancel(user["user_id"], conversation_id, request_id)
+
+
+@router.get("/conversations/{conversation_id}/generations/{request_id}/trace")
+def generation_trace(conversation_id: str, request_id: str, request: Request, user=Depends(current_user)):
+    return request.app.state.conversation_engine.trace(user["user_id"], conversation_id, request_id)
+
+
+@router.post("/conversations/{conversation_id}/generations/{request_id}/resume")
+async def resume_generation(conversation_id: str, request_id: str, request: Request, user=Depends(current_user)):
+    live = await request.app.state.conversation_engine.resume(user["user_id"], conversation_id, request_id)
+    return StreamingResponse(request.app.state.conversation_engine.events(live), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/conversations/{conversation_id}/context-preview")

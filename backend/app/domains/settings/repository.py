@@ -37,11 +37,12 @@ class SettingsRepository(SQLiteRepository):
     def update_profile(self, user_id: str, profile_id: str, values):
         return self.execute(
             "UPDATE model_profiles SET name=?,provider=?,provider_name=?,api_protocol=?,headers_json=?,base_url=?,model=?,api_key=?,temperature=?,top_p=?," 
-            "max_tokens=?,timeout_seconds=?,updated_at=?,model_type=?,test_status=?,test_message=?,tested_at=?,context_window=? WHERE user_id=? AND id=?",
+            "max_tokens=?,timeout_seconds=?,updated_at=?,model_type=?,test_status=?,test_message=?,tested_at=?,context_window=?,tool_support=? WHERE user_id=? AND id=?",
             (values["name"], values["provider"], values["provider_name"], values["api_protocol"], values["headers_json"], values["base_url"], values["model"], values["api_key"],
              values["temperature"], values["top_p"], values["max_tokens"], values["timeout_seconds"],
              values["updated_at"], values["model_type"], values["test_status"], values["test_message"],
-             values["tested_at"], values.get("context_window", current_window(self, profile_id)), user_id, profile_id),
+             values["tested_at"], values.get("context_window", current_window(self, profile_id)),
+             values["tool_support"], user_id, profile_id),
         )
 
     def activate_profile(self, user_id: str, profile):
@@ -95,7 +96,7 @@ class SettingsRepository(SQLiteRepository):
 
         return self.execute(
             "UPDATE model_profiles SET provider=?,base_url=?,model=?,api_key=?,temperature=?,top_p=?,"
-            "max_tokens=?,timeout_seconds=?,updated_at=?,test_status='untested',test_message='',tested_at=NULL "
+            "max_tokens=?,timeout_seconds=?,updated_at=?,test_status='untested',test_message='',tested_at=NULL,tool_support='unverified' "
             "WHERE id=? AND user_id=?",
             tuple(settings[k] for k in (
                 "provider", "base_url", "model", "api_key", "temperature", "top_p", "max_tokens", "timeout_seconds",

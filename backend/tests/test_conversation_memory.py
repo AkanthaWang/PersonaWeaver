@@ -110,7 +110,9 @@ def test_complete_turn_extracts_once_and_partial_turn_never_extracts(chat_client
         yield {"text": "半段"}
         raise ValueError("断开")
     monkeypatch.setattr(provider, "stream", partial)
-    send(client, cid, "partial", request_id="partial")
+    response = client.post(f"/api/v1/conversations/{cid}/messages",
+                           json={"message": "partial", "request_id": "partial"})
+    assert response.status_code == 502
     assert len(wait_jobs(client, cid)["jobs"]) == 1
     assert len(extraction_calls) == 1
 

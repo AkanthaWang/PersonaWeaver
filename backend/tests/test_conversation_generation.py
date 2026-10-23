@@ -132,7 +132,8 @@ def test_chat_does_not_embed_even_with_a_selected_embedding_model(chat_client, m
     assert calls == [] and embedding_calls == []
     client.post(f"/api/v1/conversations/{cid}/{transport}", json={"message": "林默"}).raise_for_status()
     assert len(calls) == 1 and embedding_calls == []
-    assert "林默在城东等候" in calls[0][0]["content"]
+    # Original text is only supplied after a model-requested, ordered fallback.
+    assert "林默在城东等候" not in json.dumps(calls[0], ensure_ascii=False)
     assert book_db.one("SELECT COUNT(*) AS count FROM chapter_vectors")["count"] == 0
 
 
@@ -169,12 +170,13 @@ def test_stream_events_and_partial_failure(chat_client, monkeypatch):
                            json={"message": "continue", "request_id": "partial"})
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
     assert events[0]["request_id"] == "partial"
-    assert events[-1]["status"] == "interrupted"
-    assert events[-1]["reply"] == "半段😀"
-    assert events[-1]["messages"][-1]["metadata"]["status"] == "interrupted"
-    assert events[-1]["assistant_node_id"]
-    assert [line for line in response.text.splitlines() if line.startswith("event:")] == [
-        "event: start", "event: context", "event: sources", "event: delta", "event: terminal"]
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["reply"] == ""
+    assert events[-1]["messages"] == []
+    assert not events[-1]["assistant_node_id"]
+    names = [line for line in response.text.splitlines() if line.startswith("event:")]
+    assert names[0] == "event: start" and names[-1] == "event: terminal"
+    assert "event: phase" in names and "event: delta" not in names
 
 
 def test_zero_text_failure_does_not_save_empty_messages(chat_client, monkeypatch):
@@ -221,7 +223,7 @@ def test_stop_closes_upstream_and_releases_conversation(chat_client, monkeypatch
         assert busy.value.status_code == 409
         result = await engine.cancel(user, cid, live.request_id)
         assert result["status"] == "cancelled"
-        assert len(result["messages"]) == (2 if partial else 0)
+        assert result["messages"] == []
         assert closed
         # Branch changes work again after cancellation.
         client.patch(f"/api/v1/conversations/{cid}/active-node", json={"node_id": None}).raise_for_status()
@@ -251,10 +253,11 @@ def test_failed_final_transaction_is_recoverable(chat_client, monkeypatch):
     monkeypatch.setattr(engine.service.repo, "append_exchange", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk")))
     response = client.post(f"/api/v1/conversations/{cid}/messages/stream",
                            json={"message": "hi", "request_id": "disk"})
-    assert '"storage_error": true' in response.text
+    assert '"status": "failed"' in response.text
     assert client.get(f"/api/v1/conversations/{cid}").json()["messages"] == []
     monkeypatch.setattr(engine.service.repo, "append_exchange", original)
-    engine.recover()
+    resumed = client.post(f"/api/v1/conversations/{cid}/generations/disk/resume")
+    assert resumed.status_code == 200, resumed.text
     assert len(client.get(f"/api/v1/conversations/{cid}").json()["messages"]) == 2
 
 
@@ -320,13 +323,14 @@ def test_stream_disconnect_saves_partial_reply(chat_client, monkeypatch):
         live = await engine.start(user, cid, MessageRequest(message="hi", request_id="disconnect"))
         events = engine.events(live)
         async for event in events:
-            if event.startswith("event: delta"):
+            if event.startswith("event: phase") and '"draft"' in event:
+                await asyncio.sleep(.05)
                 break
         await events.aclose()
         result = engine.result(user, cid, "disconnect")
         assert result["status"] == "interrupted"
-        assert result["reply"] == "断连前文本"
-        assert len(result["messages"]) == 2
+        assert result["reply"] == ""
+        assert result["messages"] == []
         await engine.shutdown()
     asyncio.run(scenario())
 
@@ -334,17 +338,17 @@ def test_stream_disconnect_saves_partial_reply(chat_client, monkeypatch):
 def test_context_window_is_persisted_and_auto_compaction_keeps_recent_turns(chat_client):
     client, calls = chat_client
     model = client.post("/api/v1/settings/models", json={
-        "name": "small", "context_window": 2048, "max_tokens": 128, "activate": True,
+        "name": "small", "context_window": 4096, "max_tokens": 128, "activate": True,
     }).json()
-    assert model["context_window"] == 2048
-    assert client.get("/api/v1/settings/model").json()["context_window"] == 2048
+    assert model["context_window"] == 4096
+    assert client.get("/api/v1/settings/model").json()["context_window"] == 4096
     cid = create(client)
     for i in range(6):
-        result = send(client, cid, f"第{i}轮" + "甲" * 160)
+        result = send(client, cid, f"第{i}轮" + "甲" * 400)
     assert any(e["entry_type"] == "compaction" for e in result["context"])
     assert result["context_usage"]["input_tokens"] <= result["context_usage"]["available_input"]
     assert any("第4轮" in m["content"] for m in calls[-1])
-    refused = client.post(f"/api/v1/conversations/{cid}/messages", json={"message": "甲" * 1200})
+    refused = client.post(f"/api/v1/conversations/{cid}/messages", json={"message": "甲" * 5000})
     assert refused.status_code == 422
 
 

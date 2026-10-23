@@ -16,6 +16,7 @@ from . import budget, compaction
 from .memory_context import effective_entries
 from .mirror import sync_mirror
 from .service import ConversationService, _conversation_lock
+from backend.app.ai.harness.storage import identity
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,24 @@ class GenerationEngine:
     def public(self, user_id, cid, rid):
         run = self.get_run(user_id, cid, rid)
         return {k: run[k] for k in (
-            "request_id", "status", "reply", "user_node_id", "assistant_node_id", "error", "updated_at", "cleared"
-        )} | {k: json.loads(run[k]) for k in ("usage", "context_usage", "sources")}
+            "request_id", "status", "message", "parent_id", "reply", "user_node_id", "assistant_node_id", "error", "updated_at", "cleared"
+        )} | {k: json.loads(run[k]) for k in ("usage", "context_usage", "sources", "validation")} | {
+            "phase": run["phase"], "checkpoint_id": run["checkpoint_id"], "tool_mode": run["tool_mode"],
+            "resumable": bool(run["harness_version"] and run["checkpoint_id"] and not run["cleared"]
+                              and run["status"] in {"failed", "interrupted", "cancelled"}
+                              and run["phase"] not in {"blocked"}),
+        }
 
-    def optional_context(self, user_id, row, path, message):
+    def recent(self, user_id, cid):
+        self.service.get_owned(user_id, cid)
+        runs = self.db.all(
+            "SELECT request_id FROM conversation_runs WHERE conversation_id=? AND cleared=0 "
+            "ORDER BY rowid DESC LIMIT 20", (cid,))
+        return {"runs": [self.public(user_id, cid, r["request_id"]) for r in runs]}
+
+    def optional_context(self, user_id, row, path, message, include_knowledge=True):
         result = {}
-        if row.get("book_id") and row.get("knowledge_enabled"):
+        if include_knowledge and row.get("book_id") and row.get("knowledge_enabled"):
             from .knowledge_search import retrieve
             query = message
             if row.get("card_id"):
@@ -78,15 +91,15 @@ class GenerationEngine:
                                if n.get("entry_type") == "message" and n.get("role") == "user"), "")
                 query += " " + recent[:500]
             result["knowledge"] = retrieve(
-                self.db, user_id, row["book_id"], query, limit=6, use_embeddings=False,
+                self.db, user_id, row["book_id"], query, limit=6, use_embeddings=False, scope="knowledge",
             )
         if self.memory:
             result["memory"] = self.memory.context(row["id"], path)
         return result
 
-    def prepare(self, user_id, row, payload, parent_id, user_prompt=""):
+    def prepare(self, user_id, row, payload, parent_id, user_prompt="", include_knowledge=True):
         path = self.service.repo.path(row["id"], parent_id)
-        optional = self.optional_context(user_id, row, path, payload.message)
+        optional = self.optional_context(user_id, row, path, payload.message, include_knowledge)
         return budget.prepare(self.service, user_id, row, payload, parent_id, user_prompt, optional)
 
     def preview(self, user_id, cid, payload, user_prompt=""):
@@ -120,7 +133,7 @@ class GenerationEngine:
             parent = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
             if parent and not self.service.repo.node(cid, parent):
                 raise HTTPException(404, "父消息节点不存在")
-            prepared = await asyncio.to_thread(self.prepare, user_id, row, payload, parent, user_prompt)
+            prepared = await asyncio.to_thread(self.prepare, user_id, row, payload, parent, user_prompt, False)
             stamp = now()
             self.db.execute(
                 "INSERT INTO conversation_runs(conversation_id,request_id,fingerprint,status,parent_id,message,"
@@ -129,6 +142,11 @@ class GenerationEngine:
                  dump(snapshot(prepared["settings"])), dump(prepared["context_usage"]),
                  dump(prepared["sources"]), stamp, stamp),
             )
+            inputs["active_leaf_id"] = row.get("active_leaf_id")
+            self.db.execute(
+                "UPDATE conversation_runs SET harness_version=1,thread_id=?,request_json=?,state_fingerprint=? "
+                "WHERE conversation_id=? AND request_id=?",
+                (identifier("harness"), dump(inputs), identity(self, user_id, row, prepared["settings"]), cid, rid))
             live = LiveRun(cid, rid)
             self.live[(cid, rid)] = live
             await live.emit("start", {"request_id": rid, "capabilities": provider.capability(prepared["settings"])})
@@ -176,12 +194,12 @@ class GenerationEngine:
             result["mirror_warning"] = "回复已保存，JSONL 镜像待恢复同步"
         return result
 
-    async def auto_compact(self, user_id, row, payload, prepared, user_prompt):
+    async def auto_compact(self, user_id, row, payload, prepared, user_prompt, headroom=0):
         entries = effective_entries(prepared["path"])
         previous = next((e.get("summary", "") for e in entries if e.get("entry_type") == "compaction"), "")
         history = [e for e in entries if e.get("entry_type") != "compaction"]
         room = prepared["context_usage"]["available_input"] - prepared["fixed_tokens"]
-        keep = min(2000, max(100, room // 2))
+        keep = min(2000, max(100, (room - headroom) // 2))
         cut = compaction.choose_cut_point(history, keep)
         if cut <= 0:
             if not prepared["context_usage"]["fits"]:
@@ -192,6 +210,7 @@ class GenerationEngine:
         limit = settings["context_window"] - settings["max_tokens"] - prepared["context_usage"]["safety"]
         # Split only the summarizer input, never discard parts of a long message.
         pending = [dict(e) for e in history[:cut]]
+        stage_usage = {}
         while pending:
             batch = []
             while pending and compaction.messages_tokens(compaction.build_prompt(batch + [pending[0]], summary)) <= limit:
@@ -213,7 +232,12 @@ class GenerationEngine:
                 item["content"] = text[low:]
                 if not item["content"]:
                     pending.pop(0)
-            summary = await provider.complete(settings, compaction.build_prompt(batch, summary))
+            prompt = compaction.build_prompt(batch, summary)
+            summary, actual = await provider.complete_result(settings, prompt)
+            stage_usage[f"compaction_{len(stage_usage)}"] = {
+                "estimated_input": compaction.messages_tokens(prompt),
+                "estimated_output": compaction.estimate_tokens(summary), "actual": actual,
+            }
         kept = history[cut:]
         node = identifier("compaction")
         self.service.repo.append_compaction(
@@ -223,68 +247,38 @@ class GenerationEngine:
         )
         row["active_leaf_id"] = node
         # User explicitly chose this parent; subsequent exchange must attach to its checkpoint.
-        prepared = await asyncio.to_thread(self.prepare, user_id, row, payload, node, user_prompt)
+        prepared = await asyncio.to_thread(self.prepare, user_id, row, payload, node, user_prompt, False)
         if not prepared["context_usage"]["fits"]:
             raise HTTPException(422, "压缩后仍超出预算，请调整模型或输入")
+        prepared["stage_usage"] = stage_usage
         return prepared
 
-    async def run(self, live, guard, user_id, row, payload, prepared, user_prompt):
+    async def run(self, live, guard, user_id, row, payload, prepared, user_prompt, resume=False):
         live.started = True
         cid, rid = live.conversation_id, live.request_id
-        reply, usage, error, status = "", {}, None, "completed"
-        parent = None
         try:
-            parent = self.get_run(user_id, cid, rid)["parent_id"]
-            if prepared["context_usage"]["needs_compaction"]:
-                # Compaction must follow the requested branch, not an unrelated active leaf.
-                row["active_leaf_id"] = parent
-                prepared = await self.auto_compact(user_id, row, payload, prepared, user_prompt)
-                parent = row.get("active_leaf_id")
-            self.db.execute(
-                "UPDATE conversation_runs SET parent_id=?,context_usage=?,sources=? WHERE conversation_id=? AND request_id=?",
-                (parent, dump(prepared["context_usage"]), dump(prepared["sources"]), cid, rid),
-            )
-            await live.emit("context", prepared["context_usage"])
-            await live.emit("sources", prepared["sources"])
-            async for event in provider.stream(prepared["settings"], prepared["messages"]):
-                if event.get("text"):
-                    reply += event["text"]
-                    # Each checkpoint is a short independent transaction, never held over network I/O.
-                    self.db.execute(
-                        "UPDATE conversation_runs SET reply=?,updated_at=? WHERE conversation_id=? AND request_id=?",
-                        (reply, now(), cid, rid),
-                    )
-                    await live.emit("delta", {"text": event["text"]})
-                if event.get("usage"):
-                    usage = event["usage"]
-                    self.db.execute(
-                        "UPDATE conversation_runs SET usage=?,updated_at=? WHERE conversation_id=? AND request_id=?",
-                        (dump(usage), now(), cid, rid),
-                    )
-            if not reply.strip():
-                raise ValueError("模型返回空回复")
+            from backend.app.ai.harness.conversation import ConversationHarness
+            harness = ConversationHarness(self, live, user_id, row, payload, prepared, user_prompt)
+            await harness.run(resume=resume)
         except asyncio.CancelledError:
-            status, error = live.cancel_reason, "生成已停止" if live.cancel_reason == "cancelled" else "连接中断"
+            self.fail(cid, rid, live.cancel_reason, "生成已停止" if live.cancel_reason == "cancelled" else "连接中断")
         except Exception as exc:
-            status = "interrupted" if reply.strip() else "failed"
-            error = str(exc.detail) if isinstance(exc, HTTPException) else llm.error_message(exc)
+            from backend.app.ai.harness.conversation import ConsistencyBlocked
+            if isinstance(exc, ConsistencyBlocked):
+                self.db.execute("UPDATE conversation_runs SET phase='blocked' WHERE conversation_id=? AND request_id=?",
+                                (cid, rid))
+            self.fail(cid, rid, "failed", str(exc.detail) if isinstance(exc, HTTPException) else llm.error_message(exc))
             logger.warning("Conversation generation stopped: %s", type(exc).__name__)
         try:
-            self.finalize(user_id, cid, rid, reply, status, error, usage, parent)
             warning = sync_mirror(self.db, cid)
             result = self.result(user_id, cid, rid)
             if warning:
                 result["mirror_warning"] = warning
-            if status == "completed" and self.memory and row.get("memory_enabled"):
-                try:
-                    self.memory.enqueue(user_id, cid, rid, result["assistant_node_id"], prepared["settings"])
-                except Exception:
-                    result["memory_warning"] = "回复已保存，记忆任务创建失败，可手动重试"
             await live.emit("terminal", result)
         except Exception:
             # Leave running checkpoint recoverable, and surface a durable-save error.
             logger.exception("Could not persist conversation generation")
-            await live.emit("terminal", {"request_id": rid, "status": "failed", "reply": reply,
+            await live.emit("terminal", {"request_id": rid, "status": "failed", "reply": "",
                                        "error": "回复持久化失败；保留请求 ID，恢复后查询状态", "storage_error": True})
         finally:
             guard.__exit__(None, None, None)
@@ -292,6 +286,69 @@ class GenerationEngine:
                 live.terminal = True
                 live.changed.notify_all()
             self.live.pop((cid, rid), None)
+
+    def fail(self, cid, rid, status, error):
+        self.db.execute(
+            "UPDATE conversation_runs SET status=?,error=?,updated_at=? "
+            "WHERE conversation_id=? AND request_id=? AND status='running'",
+            (status, error, now(), cid, rid))
+
+    def trace(self, user_id, cid, rid):
+        self.get_run(user_id, cid, rid)
+        return {"events": [{**r, "payload": json.loads(r["payload"])} for r in self.db.all(
+            "SELECT seq,event,payload,created_at FROM harness_events WHERE conversation_id=? AND request_id=? ORDER BY seq",
+            (cid, rid))]}
+
+    async def resume(self, user_id, cid, rid):
+        run = self.get_run(user_id, cid, rid)
+        if not self.public(user_id, cid, rid)["resumable"]:
+            raise HTTPException(409, "此运行不可恢复，请创建新请求")
+        guard = _conversation_lock(cid)
+        guard.__enter__()
+        live = None
+        try:
+            run = self.get_run(user_id, cid, rid)
+            if not self.public(user_id, cid, rid)["resumable"]:
+                raise HTTPException(409, "运行状态已变化")
+            row = self.service.get_owned(user_id, cid)
+            data = json.loads(run["request_json"])
+            expected_leaf = data.get("active_leaf_id")
+            if row.get("active_leaf_id") != expected_leaf:
+                raise HTTPException(409, "活动分支已变化，请创建新请求")
+            from .schemas import MessageRequest
+            fields = {k: v for k, v in data.items() if k in MessageRequest.model_fields}
+            payload = MessageRequest(**fields, request_id=rid)
+            prepared = await asyncio.to_thread(self.prepare, user_id, row, payload,
+                                               run["parent_id"], data.get("user_prompt", ""), False)
+            if identity(self, user_id, row, prepared["settings"]) != run["state_fingerprint"]:
+                raise HTTPException(409, "模型、角色设定或资料版本已变化，请创建新请求")
+            from backend.app.ai.harness.conversation import checkpoint_status
+            saved = await checkpoint_status(self.db, run["thread_id"])
+            if not saved or not saved.checkpoint.get("channel_values"):
+                raise HTTPException(409, "检查点不存在或不可用，请创建新请求")
+            self.db.execute("UPDATE conversation_runs SET status='running',error=NULL WHERE conversation_id=? AND request_id=?",
+                            (cid, rid))
+            live = LiveRun(cid, rid)
+            self.live[(cid, rid)] = live
+            await live.emit("start", {"request_id": rid, "resumed": True,
+                                    "capabilities": provider.capability(prepared["settings"])})
+            live.task = asyncio.create_task(self.run(live, guard, user_id, row, payload, prepared,
+                                                     data.get("user_prompt", ""), resume=True))
+            await asyncio.sleep(0)
+            return live
+        except BaseException:
+            if live and live.task:
+                live.cancel_reason = "interrupted"
+                live.task.cancel()
+                if live.started:
+                    await asyncio.shield(live.task)
+                else:
+                    self.live.pop((cid, rid), None)
+                    self.fail(cid, rid, "interrupted", "恢复请求已断开，可再次显式恢复")
+                    guard.__exit__(None, None, None)
+            else:
+                guard.__exit__(None, None, None)
+            raise
 
     def finalize(self, user_id, cid, rid, reply, status, error, usage, parent=None):
         run = self.get_run(user_id, cid, rid)
@@ -320,8 +377,21 @@ class GenerationEngine:
         self.memory.recover()
         for run in self.db.all("SELECT r.*,c.user_id FROM conversation_runs r JOIN conversations c "
                                "ON c.id=r.conversation_id WHERE r.status='running'"):
-            self.finalize(run["user_id"], run["conversation_id"], run["request_id"], run["reply"],
-                          "interrupted", "服务重启，生成已中断；不会自动重新调用模型", json.loads(run["usage"]))
+            if run["harness_version"]:
+                self.fail(run["conversation_id"], run["request_id"], "interrupted",
+                          "服务重启，运行已中断；可显式恢复，不会自动调用模型")
+                checkpoint_table = self.db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='checkpoints'")
+                if checkpoint_table and not run["checkpoint_id"] and run["thread_id"]:
+                    # A crash may happen after the saver committed but before the run pointer was updated.
+                    saved = self.db.one(
+                        "SELECT checkpoint_id FROM checkpoints WHERE thread_id=? ORDER BY checkpoint_id DESC LIMIT 1",
+                        (run["thread_id"],))
+                    if saved:
+                        self.db.execute("UPDATE conversation_runs SET checkpoint_id=? WHERE conversation_id=? AND request_id=?",
+                                        (saved["checkpoint_id"], run["conversation_id"], run["request_id"]))
+            else:
+                self.finalize(run["user_id"], run["conversation_id"], run["request_id"], run["reply"],
+                              "interrupted", "服务重启，生成已中断；不会自动重新调用模型", json.loads(run["usage"]))
             sync_mirror(self.db, run["conversation_id"])
 
     async def cancel(self, user_id, cid, rid, reason="cancelled"):
@@ -333,8 +403,11 @@ class GenerationEngine:
             await asyncio.shield(live.task)
         elif run["status"] == "running":
             with _conversation_lock(cid):
-                self.finalize(user_id, cid, rid, run["reply"], "interrupted",
-                              "任务已退出，恢复已保存的文本", json.loads(run["usage"]))
+                if run["harness_version"]:
+                    self.fail(cid, rid, "interrupted", "任务已退出，可显式恢复")
+                else:
+                    self.finalize(user_id, cid, rid, run["reply"], "interrupted",
+                                  "任务已退出，恢复已保存的文本", json.loads(run["usage"]))
                 sync_mirror(self.db, cid)
         return self.result(user_id, cid, rid)
 

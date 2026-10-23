@@ -42,6 +42,11 @@ def test_profile(profile_id: str, user=Depends(current_user), db=Depends(get_db)
     return SettingsService(db).test_profile(user["user_id"], profile_id)
 
 
+@router.post("/models/{profile_id}/test-tools")
+async def test_tools(profile_id: str, user=Depends(current_user), db=Depends(get_db)):
+    return await SettingsService(db).test_tools(user["user_id"], profile_id)
+
+
 @router.post("/models", status_code=status.HTTP_201_CREATED)
 def create_model(payload: ModelProfileCreate, user=Depends(current_user), db=Depends(get_db)):
     return SettingsService(db).save_profile(user["user_id"], payload)

@@ -31,5 +31,5 @@ if defined PORT_PID (
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port %BACKEND_PORT% %*
 ) else (
-  python -m uvicorn backend.main:app --host 127.0.0.1 --port %BACKEND_PORT% %*
+  conda run --no-capture-output -n mercury312 python -m uvicorn backend.main:app --host 127.0.0.1 --port %BACKEND_PORT% %*
 )

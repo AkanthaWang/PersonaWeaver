@@ -7,9 +7,9 @@ import sqlite3
 
 from fastapi import HTTPException
 
-INDEX_VERSION = "cjk-bigram-v1"
+INDEX_VERSION = "cjk-bigram-v2-character-harness"
 SOURCE_TABLES = ("chapters", "knowledge_characters", "knowledge_facts", "knowledge_events",
-                 "knowledge_relations", "knowledge_evidence", "knowledge_reviews")
+                 "knowledge_relations", "knowledge_evidence", "knowledge_reviews", "knowledge_entities")
 
 
 def initialize_index(conn):
@@ -64,6 +64,9 @@ def documents(conn, book_id):
         item = {"id": key, "book_id": book_id, "kind": key.split(":")[0], "title": title,
                 "content": content, "aliases": aliases or [], "chapter_id": None,
                 "chapter_no": None, "quote": "", "start": None, "end": None}
+        if record.get("entity_id"):
+            item.update(entity_id=record["entity_id"], fact_type=record.get("fact_type"),
+                        fact_version=record.get("version"))
         ev = evidence.get(record.get("evidence_id"))
         if ev:
             chapter = chapters.get(ev["chapter_id"])
@@ -119,6 +122,33 @@ def documents(conn, book_id):
                 title = f"{names[0]} · {row['relation_type']} · {names[1]}"
                 content = f"{title}：{row['value_json']}"
             yield source(row, f"{kind}:{row['id']}", title, content)
+    # These projections are not mirrored into character CRUD facts.
+    for row in _rows(conn, "knowledge_entities"):
+        if row["book_id"] != book_id or row["kind"] not in {"items", "world_locations"} or row["id"] in pending:
+            continue
+        entity = json.loads(row["content"])
+        citations = [s for fact in entity.get("evidence", []) for s in fact.get("sources", [])]
+        verified = []
+        for citation in citations:
+            chapter = chapters.get(citation.get("chapter_id"))
+            start, end, quote = citation.get("start"), citation.get("end"), citation.get("quote")
+            if (chapter and isinstance(start, int) and isinstance(end, int) and quote
+                    and 0 <= start < end <= len(chapter["content"]) and chapter["content"][start:end] == quote):
+                verified.append(citation)
+        if not verified:
+            continue
+        citation = verified[0]
+        chapter = chapters[citation["chapter_id"]]
+        fields = {k: entity[k] for k in (
+            "name", "summary", "description", "type", "location", "owner", "state_changes",
+        ) if entity.get(k)}
+        yield {
+            "id": f"{row['kind']}:{row['id']}", "book_id": book_id, "kind": row["kind"],
+            "title": row["name"], "aliases": entity.get("aliases", []),
+            "content": json.dumps(fields, ensure_ascii=False), "source_ids": entity.get("source_ids", []),
+            "chapter_id": chapter["id"], "chapter_no": chapter["chapter_no"], "chapter_title": chapter["title"],
+            "quote": citation["quote"], "start": citation["start"], "end": citation["end"],
+        }
 
 
 def ensure_index(db, book_id):
@@ -153,7 +183,7 @@ def ensure_index(db, book_id):
     return state["revision"]
 
 
-def retrieve(database, user_id, book_id, query, limit=12, *, use_embeddings=True):
+def retrieve(database, user_id, book_id, query, limit=12, *, use_embeddings=True, scope=None):
     if not database.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
         raise HTTPException(404, "关联作品不存在")
     db = database.book_database(book_id)
@@ -173,12 +203,19 @@ def retrieve(database, user_id, book_id, query, limit=12, *, use_embeddings=True
     if not tokens:
         return []
     match = " OR ".join('"' + token + '"' for token in tokens)
+    scope_filter = (" AND json_extract(d.payload,'$.kind') != 'chapter'" if scope == "knowledge" else
+                    " AND json_extract(d.payload,'$.kind') = 'chapter'" if scope == "original" else "")
     rows = db.all("SELECT d.payload,bm25(chat_fts) AS rank FROM chat_fts "
-                  "JOIN chat_documents d ON d.id=chat_fts.id WHERE chat_fts MATCH ? ORDER BY rank LIMIT 80", (match,))
+                  "JOIN chat_documents d ON d.id=chat_fts.id WHERE chat_fts MATCH ?" +
+                  scope_filter + " ORDER BY rank LIMIT 80", (match,))
     candidates = []
     lowered = query.casefold()
     for row in rows:
         item = json.loads(row["payload"])
+        if scope == "knowledge" and item["kind"] == "chapter":
+            continue
+        if scope == "original" and item["kind"] != "chapter":
+            continue
         exact = any(name.casefold() in lowered for name in [item["title"], *item.get("aliases", [])] if name)
         candidates.append((not exact, row["rank"], item))
     keyword = [item for _, _, item in sorted(candidates, key=lambda v: (v[0], v[1]))]
@@ -186,6 +223,8 @@ def retrieve(database, user_id, book_id, query, limit=12, *, use_embeddings=True
     if use_embeddings and query.strip():
         from .semantic_search import recall
         indexed = [json.loads(row["payload"]) for row in db.all("SELECT payload FROM chat_documents")]
+        if scope:
+            indexed = [item for item in indexed if (item["kind"] == "chapter") == (scope == "original")]
         semantic = recall(database, db, user_id, expanded, indexed, max(24, limit * 2))
     from .semantic_search import fuse
     results = fuse(keyword, semantic, limit)
@@ -206,3 +245,21 @@ def rebuild_index(db, book_id):
         conn.execute("DELETE FROM chat_documents")
         conn.execute("UPDATE chat_index_state SET indexed_revision=-1,version='' WHERE id=1")
     ensure_index(db, book_id)
+
+
+def core_character_records(database, user_id, book_id, names):
+    """Supply selected-role identity/behavior even when a scene query ranks elsewhere."""
+    if not database.one("SELECT book_id FROM books WHERE book_id=? AND user_id=?", (book_id, user_id)):
+        raise HTTPException(404, "关联作品不存在")
+    db = database.book_database(book_id)
+    revision = ensure_index(db, book_id)
+    normalized = {name.casefold() for name in names}
+    characters = [json.loads(r["payload"]) for r in db.all(
+        "SELECT payload FROM chat_documents WHERE id LIKE 'character:%'")]
+    selected = [c for c in characters if normalized & {
+        n.casefold() for n in [c["title"], *c.get("aliases", [])]}]
+    entity_ids = {c["id"].split(":", 1)[1] for c in selected}
+    facts = [json.loads(r["payload"]) for r in db.all("SELECT payload FROM chat_documents WHERE id LIKE 'fact:%'")]
+    core = selected + [f for f in facts if f.get("entity_id") in entity_ids
+                       and f.get("fact_type") in {"identity", "personality", "behavior", "speech"}]
+    return [{**item, "core": True, "index_revision": revision, "retrieval": "core"} for item in core]

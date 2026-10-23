@@ -12,6 +12,8 @@ def initialize_conversations(conn):
         ("mode", "TEXT NOT NULL DEFAULT 'assistant'"),
         ("knowledge_enabled", "INTEGER NOT NULL DEFAULT 1"),
         ("memory_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("writing_format", "TEXT NOT NULL DEFAULT 'novel'"),
+        ("character_ids", "TEXT NOT NULL DEFAULT '[]'"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
@@ -58,6 +60,33 @@ def initialize_conversations(conn):
         conn.execute("ALTER TABLE conversation_mirrors ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
     if "cleared" not in {row[1] for row in conn.execute("PRAGMA table_info(conversation_runs)")}:
         conn.execute("ALTER TABLE conversation_runs ADD COLUMN cleared INTEGER NOT NULL DEFAULT 0")
+    run_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_runs)")}
+    for name, definition in (
+        ("harness_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("phase", "TEXT NOT NULL DEFAULT ''"),
+        ("thread_id", "TEXT"),
+        ("checkpoint_id", "TEXT"),
+        ("request_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("state_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("validation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("tool_mode", "TEXT NOT NULL DEFAULT 'json'"),
+    ):
+        if name not in run_columns:
+            conn.execute(f"ALTER TABLE conversation_runs ADD COLUMN {name} {definition}")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS harness_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(conversation_id,request_id)
+                REFERENCES conversation_runs(conversation_id,request_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS harness_events_run
+            ON harness_events(conversation_id,request_id,seq);
+    """)
     for operation, source in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
         conn.executescript(f"""
             DROP TRIGGER IF EXISTS conversation_mirror_message_{operation.lower()};

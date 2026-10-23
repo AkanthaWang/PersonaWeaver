@@ -90,6 +90,7 @@ def settings_from_profile(profile):
     settings["api_protocol"] = profile.get("api_protocol") or ""
     settings["headers"] = json.loads(profile.get("headers_json") or "{}")
     settings["context_window"] = profile.get("context_window") or 32768
+    settings["tool_support"] = profile.get("tool_support") or "unverified"
     return settings
 
 

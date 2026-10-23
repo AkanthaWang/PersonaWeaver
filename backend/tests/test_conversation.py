@@ -23,6 +23,24 @@ def chat_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llm, "chat", reply)
     from backend.app.ai.providers import conversation_stream
+    from backend.app.ai.providers import harness_tools
+    from backend.app.ai.harness.conversation import ConversationHarness
+
+    original_call = ConversationHarness.call
+
+    async def call(self, state, messages, stage, json_mode=False):
+        # Legacy conversation tests isolate history/transport behavior; real review
+        # parsing and fail-closed publication are exercised in test_harness.py.
+        if stage == "review":
+            self.check_budget(messages)
+            return '{"passed":true,"conflicts":[]}', state.get("usage", {})
+        return await original_call(self, state, messages, stage, json_mode)
+
+    async def decide(settings, messages, tools, mode=None):
+        return {"calls": []}, "json", {}
+
+    monkeypatch.setattr(ConversationHarness, "call", call)
+    monkeypatch.setattr(harness_tools, "decide", decide)
 
     async def stream(settings, messages, json_mode=False):
         yield {"text": '{"memories":[]}' if json_mode else reply(settings, messages)}

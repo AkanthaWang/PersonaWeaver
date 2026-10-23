@@ -239,9 +239,17 @@ class ExtractionWorker:
                       synthesis_version=digest(KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT))
 
     def run(self, chapters):
+        from backend.app.ai.harness.extraction import run_extraction
+        return run_extraction(self, chapters)
+
+    def prepare_graph(self, chapters):
         selected = select_chapters(chapters, self.request)
         scope_hash = input_fingerprint(selected)
         self.db.execute("UPDATE tasks SET input_fingerprint=? WHERE id=?", (scope_hash, self.task_id))
+        return {"selected": selected, "scope_hash": scope_hash}
+
+    def extract_graph(self, state):
+        selected = state["selected"]
         chunks = [(chapter, part) for chapter in selected for part in segments(chapter)]
         by_chapter = {chapter["id"]: [] for chapter in selected}
         agent = ExtractionAgent(self)
@@ -256,11 +264,16 @@ class ExtractionWorker:
         for action, payload in zip(extraction_actions, extracted):
             if payload is not None:
                 by_chapter[action.chapter_id].append(payload)
+        return {"by_chapter": by_chapter}
+
+    def lookup_graph(self, state):
+        selected, scope_hash, by_chapter = state["selected"], state["scope_hash"], state["by_chapter"]
+        agent = ExtractionAgent(self)
         staged = {}
         for chapter in selected:
             # Publish only complete chapters, retaining older complete results
             # when any segment of a long chapter is unavailable.
-            expected = sum(part["chapter_id"] == chapter["id"] for _, part in chunks)
+            expected = len(segments(chapter))
             if len(by_chapter[chapter["id"]]) != expected:
                 self.log("warning", f"第 {chapter['chapter_no']} 章分段未全部完成，保留上一版本")
                 continue
@@ -299,6 +312,10 @@ class ExtractionWorker:
             staged[chapter["id"]] = (chapter, payload)
         if not staged:
             raise RuntimeError("本轮没有完整提取成功的章节，已保留检查点和上一版本，请续跑")
+        return {"staged": staged}
+
+    def merge_graph(self, state):
+        staged = state["staged"]
         results = {chapter["id"]: (chapter, payload) for chapter, payload in knowledge.load_results(self.db, self.book["book_id"])}
         results.update(staged)
         results = sorted(results.values(), key=lambda pair: pair[0]["chapter_no"])
@@ -309,12 +326,22 @@ class ExtractionWorker:
             (self.book["book_id"],),
         )
         summaries, invalid = knowledge.project(results, previous, decisions)
+        return {"results": results, "summaries": summaries, "invalid": invalid}
+
+    def synthesis_graph(self, state):
+        summaries = state["summaries"]
+        agent = ExtractionAgent(self)
         entities = [entity for kind in ("characters", "items", "world_locations") for entity in summaries[kind]
                     if any(fact.get("sources") for fact in entity["evidence"])]
         for index, entity in enumerate(entities):
             if (entity["synthesis_status"] != "ready" or entity.get("synthesis_model") != self.config_hash
                     or entity.get("synthesis_version") != digest(KNOWLEDGE_SYNTHESIS_SYSTEM_PROMPT)):
                 self.synthesize(entity, agent, 75 + int(index / max(len(entities), 1) * 20))
+        return {"summaries": summaries}
+
+    def publish_graph(self, state):
+        staged, summaries, invalid = state["staged"], state["summaries"], state["invalid"]
+        results, chapters = state["results"], state["chapters"]
         self.step("publish", "正在原子发布资料", 98)
         with self.db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -353,3 +380,4 @@ class ExtractionWorker:
             "UPDATE books SET status='parsed',progress=100,err_message=NULL,updated_at=? WHERE book_id=?",
             (now(), self.book["book_id"]),
         )
+        return {"published": True}

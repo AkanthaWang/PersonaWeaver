@@ -49,7 +49,10 @@ class ConversationRepository(SQLiteRepository):
         )
 
     def delete(self, conversation_id: str):
-        return self.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        from backend.app.ai.harness.storage import erase_checkpoints
+        with self.database.connect() as conn:
+            erase_checkpoints(conn, conversation_id)
+            return conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,)).rowcount
 
     def node(self, conversation_id: str, node_id: str):
         return self.one(
@@ -210,12 +213,15 @@ class ConversationRepository(SQLiteRepository):
 
     def clear_messages(self, conversation_id: str, stamp: str):
         with self.database.connect() as conn:
+            from backend.app.ai.harness.storage import erase_checkpoints
+            erase_checkpoints(conn, conversation_id)
             conn.execute("DELETE FROM conversation_memory_jobs WHERE conversation_id=?", (conversation_id,))
             conn.execute("DELETE FROM conversation_memory_versions WHERE conversation_id=?", (conversation_id,))
             # Retain idempotency tombstones, but erase cleared conversation text.
             conn.execute(
                 "UPDATE conversation_runs SET cleared=1,status='interrupted',parent_id=NULL,message='',reply='',"
                 "user_node_id=NULL,assistant_node_id=NULL,sources='[]',context_usage='{}',usage='{}',result_json=NULL,"
+                "validation='{}',request_json='{}',state_fingerprint='',checkpoint_id=NULL,thread_id=NULL,"
                 "error='历史已清空，旧请求不会重新生成',updated_at=? WHERE conversation_id=?", (stamp, conversation_id),
             )
             conn.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))

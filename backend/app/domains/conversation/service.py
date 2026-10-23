@@ -94,6 +94,7 @@ class ConversationService:
         path = self.repo.path(conversation_id, active_leaf_id)
         return {
             **item,
+            "character_ids": json.loads(item.get("character_ids") or "[]"),
             "messages": [_public_entry(entry) for entry in path if entry.get("entry_type") in {"message", "custom_message"}],
             "context": _public_path(path),
             "tree": _public_tree(self.repo.tree(conversation_id)),
@@ -109,26 +110,30 @@ class ConversationService:
             book_id = card["book_id"]
         if book_id:
             self.characters.book_owned(user_id, book_id)
+        self._validate_cast(user_id, book_id, payload.character_ids)
         profile_id = self._validated_profile(user_id, payload.profile_id)
         conversation_id, stamp = identifier("conversation"), now()
         self.repo.create(
             (conversation_id, user_id, payload.title, payload.card_id, profile_id, None, None, self.store.cwd, stamp, stamp)
         )
         self.db.execute(
-            "UPDATE conversations SET book_id=?,mode=?,knowledge_enabled=?,memory_enabled=? WHERE id=?",
+            "UPDATE conversations SET book_id=?,mode=?,knowledge_enabled=?,memory_enabled=?,writing_format=?,character_ids=? WHERE id=?",
             (book_id, payload.mode or ("roleplay" if payload.card_id else "assistant"),
-             int(payload.knowledge_enabled), int(payload.memory_enabled), conversation_id),
+             int(payload.knowledge_enabled), int(payload.memory_enabled), payload.writing_format,
+             json.dumps(payload.character_ids), conversation_id),
         )
         row = self.get_owned(user_id, conversation_id)
         self._ensure_session_file(row)
         sync_mirror(self.db, conversation_id)
-        return self.get_owned(user_id, conversation_id)
+        return self.get(user_id, conversation_id)
 
     @locked
     def rename(self, user_id: str, conversation_id: str, payload):
         row = self.get_owned(user_id, conversation_id)
         stamp = now()
         fields = payload.model_dump(exclude_unset=True)
+        self._validate_cast(user_id, fields.get("book_id", row.get("book_id")),
+                            fields.get("character_ids", json.loads(row.get("character_ids") or "[]")) or [])
         if "book_id" in fields:
             if row["card_id"]:
                 card = self.characters.owned(user_id, row["card_id"])
@@ -136,12 +141,13 @@ class ConversationService:
                     raise HTTPException(422, "角色会话不能关联其他作品")
             if fields["book_id"]:
                 self.characters.book_owned(user_id, fields["book_id"])
-        for field in ("book_id", "mode", "knowledge_enabled", "memory_enabled"):
+        for field in ("book_id", "mode", "knowledge_enabled", "memory_enabled", "writing_format", "character_ids"):
             if field in fields:
                 if field != "book_id" and fields[field] is None:
                     raise HTTPException(422, "设置不能为空")
+                value = json.dumps(fields[field]) if field == "character_ids" else fields[field]
                 self.db.execute(f"UPDATE conversations SET {field}=?,updated_at=? WHERE id=?",
-                                (fields[field], stamp, conversation_id))
+                                (value, stamp, conversation_id))
         if payload.title is not None:
             self.repo.rename(conversation_id, payload.title, stamp)
         if payload.profile_id is not None:
@@ -149,7 +155,7 @@ class ConversationService:
             self.repo.set_profile(conversation_id, profile_id, stamp)
         if getattr(payload, "name", None) is not None:
             self._append_session_info(row, payload.name, stamp)
-        return self.get_owned(user_id, conversation_id)
+        return self.get(user_id, conversation_id)
 
     def delete(self, user_id: str, conversation_id: str):
         row = self.get_owned(user_id, conversation_id)
@@ -187,6 +193,8 @@ class ConversationService:
                 (new_id, user_id, title, row["card_id"], row["profile_id"], ids.get(row["active_leaf_id"]),
                  self.store.cwd, stamp, stamp, row["book_id"], row["mode"], row["knowledge_enabled"], row["memory_enabled"]),
             )
+            conn.execute("UPDATE conversations SET writing_format=?,character_ids=? WHERE id=?",
+                         (row["writing_format"], row["character_ids"], new_id))
             for entry in entries:
                 meta = metadata(entry).copy()
                 for tail in meta.get("retainedTail") or []:
@@ -214,7 +222,12 @@ class ConversationService:
         new_row = self.get_owned(user_id, new_id)
         self._ensure_session_file(new_row)
         sync_mirror(self.db, new_id)
-        return self.get_owned(user_id, new_id)
+        return self.get(user_id, new_id)
+
+    def _validate_cast(self, user_id, book_id, card_ids):
+        for card_id in card_ids:
+            if self.characters.owned(user_id, card_id)["book_id"] != book_id:
+                raise HTTPException(422, "出场角色必须属于关联作品")
 
     # ------------------------------------------------------------------ tree
     @locked
@@ -247,37 +260,27 @@ class ConversationService:
 
     # ------------------------------------------------------------------ sending
     def send(self, user_id: str, conversation_id: str, payload, user_prompt: str = ""):
-        row = self.get_owned(user_id, conversation_id)
-        parent_id = payload.parent_id if payload.parent_id is not None else row.get("active_leaf_id")
-        if parent_id and not self.repo.node(conversation_id, parent_id):
-            raise HTTPException(404, "父消息节点不存在")
-        with _conversation_lock(conversation_id):
-            row = self.get_owned(user_id, conversation_id)
-            parent_id = payload.parent_id if "parent_id" in payload.model_fields_set else row.get("active_leaf_id")
-            prepared = budget.prepare(self, user_id, row, payload, parent_id, user_prompt)
-            settings, messages = prepared["settings"], prepared["messages"]
+        """Synchronous compatibility callers use the same graph as HTTP clients."""
+        import asyncio
+        from .generation import GenerationEngine
+
+        async def generate():
+            engine = GenerationEngine(self.db)
             try:
-                reply = llm.chat(settings, messages)
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(502, llm.error_message(exc)) from exc
-            title = payload.message[:30] if row["title"] == "新会话" else row["title"]
-            stamp = now()
-            user_node_id = identifier("message")
-            assistant_node_id = identifier("message")
-            self.repo.append_exchange(
-                conversation_id, parent_id, user_node_id, assistant_node_id, payload.message, reply, title, stamp,
-                metadata={"provider": settings.get("provider"), "model": settings.get("model"),
-                          "usage": {"output": compaction.estimate_tokens(reply)}},
-            )
-            self._mirror_exchange(row, parent_id, user_node_id, assistant_node_id, payload.message, reply, stamp, settings)
-        result = self.get(user_id, conversation_id)
-        return {
-            **result,
-            "response": reply,
-            "active_leaf_id": assistant_node_id,
-        }
+                live = await engine.start(user_id, conversation_id, payload, user_prompt)
+                if live.task:
+                    await live.task
+                result = engine.result(user_id, conversation_id, live.request_id)
+                if result["status"] == "completed" and result.get("memory_enabled"):
+                    try:
+                        await engine.memory.settle(user_id, conversation_id,
+                                                   self.repo.path(conversation_id, result["active_leaf_id"]))
+                    except Exception as exc:
+                        result["memory_warning"] = llm.error_message(exc)
+                return result
+            finally:
+                await engine.shutdown()
+        return asyncio.run(generate())
 
     # ------------------------------------------------------------------ compaction
     def compact(self, user_id: str, conversation_id: str, payload):

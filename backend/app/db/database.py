@@ -426,6 +426,7 @@ class Database:
                 ("test_status", "TEXT NOT NULL DEFAULT 'untested'"),
                 ("test_message", "TEXT NOT NULL DEFAULT ''"),
                 ("tested_at", "TEXT"),
+                ("tool_support", "TEXT NOT NULL DEFAULT 'unverified'"),
             ):
                 if column not in profile_columns:
                     conn.execute(f"ALTER TABLE model_profiles ADD COLUMN {column} {definition}")
