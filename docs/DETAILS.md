@@ -306,15 +306,16 @@ SSE 事件依次为 `start/context/sources/delta/terminal`，支持 UTF-8 跨块
 `POST /context-preview` 使用本地关键词资料估算上下文，不调用远程生成或 Embedding 模型。
 会话发送也使用本地关键词检索，不调用 Embedding；以生成返回的预算与来源为准。
 
-状态为 `running/completed/cancelled/failed/interrupted`。已有文本的停止、断连、错误会保存部分回复，
-零文本不写空消息。重启恢复运行记录为中断，不自动付费重试。网络期间不持有 SQLite 写事务。
+状态为 `running/completed/cancelled/failed/interrupted`。旧版曾保存部分回复；
+第 11 节 Harness 上线后，新运行的未校验草稿只保存在检查点，不保存为正式消息。
+重启恢复运行记录为中断，不自动付费重试。网络期间不持有 SQLite 写事务。
 OpenAI 兼容、Responses、Ollama 为原生流式；Anthropic、Google、vivo 为整段兼容，
 通过 `capabilities.native_streaming` 明确标记。停止关闭上游连接，但不保证提供商停止计费。
 前端预算为估算，提供商 `usage` 单独展示。
 
 ### 作品检索与证据
 
-会话支持 `mode: assistant|roleplay`、`book_id`、`knowledge_enabled`、`memory_enabled`。
+会话支持 `mode: assistant|roleplay|writing`、`book_id`、`knowledge_enabled`、`memory_enabled`。
 角色卡会话默认角色扮演并绑定卡所属作品；无卡会话默认创作助手，可在会话设置中关联作品。
 角色卡不能关联其他作品。检索范围为该作品的全部当前有效资料，不提供章节级防剧透。
 角色对话明确以角色第一人称与用户互动，不替用户编写台词、行动或决定，不默认输出人物分析或检索报告；
@@ -326,7 +327,8 @@ OpenAI 兼容、Responses、Ollama 为原生流式；Anthropic、Google、vivo �
 即使已绑定且测试通过的 Embedding 模型，预览、普通发送、流式发送及自动压缩后的上下文准备也不调用它，
 而是用角色卡、历史、分支记忆及本地关键词材料直接调用对话模型。
 语义检索实现及缓存保留，独立向量搜索接口与模型选用配置不变，不自动删除或修改已绑定模型。
-单轮最多选取 6 条检索材料，知识材料预算上限为可用输入的 20% 且不超过约 2048 tokens。
+单次关键词查询最多召回 6 条材料；新 Harness 可按需继续查询。普通证据预算上限为可用输入的
+20% 且不超过约 2048 tokens，选定角色的核心约束不可为满足此软上限而静默丢弃。
 删除、失效、被替代及待审核记录不进入材料；假设性线索不作为原著事实召回。
 
 返回来源含作品、章节、引文、索引版本和 Unicode 字符偏移（右端不包含）。
@@ -375,3 +377,127 @@ OpenAI 兼容、Responses、Ollama 为原生流式；Anthropic、Google、vivo �
 （`knowledge.test.js` 引用缺失的 `src/domains/documents/knowledge.js`）。
 生产构建成功；浏览器验证流式完成、停止后续聊、预算、来源高亮、记忆更正/删除/撤销和锁定保护，
 以及 320、390、768、1024、1440px 布局与 Markdown 安全。
+
+## 11. 角色一致性 Agent Harness（2026-10-23）
+
+本节是新运行的权威语义，取代第 10 节旧版“直接流式输出及保存部分回复”的行为。
+首期交付角色对话、小说片段和剧本单场景，未实现整书自动生成、章节防剧透或角色实际知情推断。
+检索沿用全书资料；一致性依赖资料顺序、分支隔离、结构化审核和发布门禁，不承诺绝对的语义识别。
+
+### 环境与运行
+
+使用 `mercury312`，不修改 `pytorch`。依赖声明在 `backend/pyproject.toml` 和根 `requirements.txt`：
+LangGraph `>=1.0.10,<2`、SQLite checkpointer `>=3.1.1,<4`、LangChain Core `>=1.3.3,<2`。
+本轮验证 Python 3.12、LangGraph 1.2.16、checkpoint-sqlite 3.1.2、Core 1.6.13、
+langchain-openai 1.7.2、langchain-ollama 1.1.0。不是以旧 `pytorch` 环境执行验收。
+
+```powershell
+conda activate mercury312
+python -m pip install -r requirements.txt
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+# 另一终端在 frontend/ 内执行：
+npm run dev -- --host 127.0.0.1
+```
+
+后端可直接提供已构建的 `frontend/dist`；开发模式仍可使用 Vite。
+后端启动脚本未找到项目 `.venv` 时使用 `conda run -n mercury312`。
+真实提供商端到端联调需要另行授权；自动验收不访问真实模型、不改写正式会话数据库。
+
+### 图与业务事实来源
+
+`backend/app/ai/harness/conversation.py` 是唯一的对话/写作生成图：
+
+`restore → context → knowledge → plan ⇄ tools → draft → review → revise? → review → publish → memory`
+
+既有生成引擎负责请求幂等、锁、取消与 SSE 传输，不再独立生成正文。
+`ConversationService.send` 兼容入口也委托同一引擎。最多修订一次，第二次审核仍冲突则阻断发布；
+审核调用失败、格式无效、引用不存在依据时也不发布。失败草稿不产生正式消息或自动记忆。
+发布事务以会话内的 `request_id` 更新运行并创建消息和去重记忆任务；事务失败可显式恢复。
+
+消息树与不可变记忆版本仍是已发布状态的事实来源。LangGraph checkpoint 保存在主库中，
+按唯一 `thread_id` 隔离每个运行，保存阶段状态、草稿、实际证据、工具结果及待执行节点。
+新请求仅从指定消息路径恢复正式状态，不继承兄弟运行的临时工具结果。
+每个运行记录父节点、模型配置哈希、作品/资料修订与角色设定；密钥及请求头不写入模型快照、
+图状态或事件轨迹。模型凭据仅在调用闭包中使用。
+
+提取图在 `backend/app/ai/harness/extraction.py` 中独立运行：
+`prepare → extract → lookup → merge → synthesis → publish`。
+图节点复用 `ExtractionWorker`、既有证据验证、成功单元缓存、有限补查与原子发布。
+失败续跑仍创建新任务并按既有配置/输入指纹复用成功单元，不改变人工归并边界和部分发布规则。
+
+### 工具与证据
+
+- `search_knowledge(query)`：只查询有效的提取资料，覆盖人物、事实、关系、事件、物品和世界设定。
+- `search_original(query, knowledge_call_id, missing_question)`：必须关联本轮成功资料查询与具体缺口。
+- `read_original(chapter_id, start, end, knowledge_call_id, missing_question)`：同样验证顺序和所有权；
+  按 Unicode 字符偏移读取 1–2000 字符，右端不包含。
+
+关联作品启用检索时，每轮先执行一次资料查询；选定角色的身份、性格、行为、语言等当前有效核心事实
+不依赖场景关键词的相关性排名。模型最多做 4 轮工具决策，总计最多 8 次调用（包含首次资料查询），
+重复参数复用本轮结果。工具节点统一执行严格类型、字段、权限、顺序与读取范围校验；
+无效调用返回错误观察，不赋予额外权限。空结果与限额耗尽明确标记未知，不能冒充原著事实。
+
+OpenAI Chat Completions、Responses 和 Ollama 在通过显式工具能力测试后，
+使用非流式原生 function calls 做工具决策；未验证模型与其他协议默认使用严格 JSON 动作。
+模型设置中的“测试工具能力”需二次确认费用，只发一次探测，不执行真实检索工具；
+模型地址、模型名、协议或凭据变化后验证失效。连接测试不等于工具能力测试。
+只有明确“不支持 tools/function”的 400/422 响应才允许已验证模型降级；
+鉴权、限流、服务错误和参数错误不触发隐式二次调用。两条路径均进入同一工具节点。
+这一兼容判断不代替真实模型能力验证，返回 `tool_mode: native|json` 供追溯。
+
+原文补查仅是本轮证据，不自动写回知识库。实际采用来源保留事实 ID/版本、章节、引文、
+字符偏移和资料索引版本；世界/物品投影仅以已核验引文进入检索。
+前端来源标记“提取资料/原文补查”，复用章节阅读和 Unicode 高亮。
+
+### 上下文、恢复与发布
+
+预算保留约 80% 触发压缩策略。除规则、角色卡、分支事实、历史及用户输入外，
+还为审核草稿、工具定义、工具观察、检索证据和输出预留空间；每次模型调用前重新检查。
+旧历史增量压缩，近期完整轮次保留，原消息不删除。
+选定角色核心事实和人工锁定记忆不会静默丢弃，必要约束/最近完整轮次无法容纳则明确拒绝。
+压缩节点属于消息树；运行恢复也核对其父路径，避免在错误分支续跑。
+
+新运行停止、断连、服务重启只标记中断，不自动重新调用模型。显式恢复复用完成节点，
+但不会承诺恢复未完成模型调用的中途 token。父分支、模型/角色设定或资料版本变化时返回 409，
+要求新建请求；已阻断发布的冲突运行不可恢复为“跳过审核”。
+清空/删除会话会擦除该会话的图检查点、checkpoint writes 和事件轨迹；
+清空保留旧请求指纹墓碑，旧 ID 不能重放或重新调用模型。
+
+SSE 保留 `start/context/sources/delta/terminal`，增加 `phase/tool/validation`。
+审核完成前只展示阶段进度，正文审核通过且原子发布后才以缓冲 `delta` 交付，
+不将其标为实时模型 token 流。`capabilities.native_streaming` 仅描述上游提供商传输能力。
+成功或失败的查询均提供已完成阶段用量；提供商实际用量与本地估算分别标记。
+
+完整发布后自动提炼当前分支事实；编辑、锁定、删除和撤销保留不可变版本。
+仅接受该路径真实消息 ID，不回写原著。下一轮开始前等待祖先路径待完成任务；
+失败则要求显式重试记忆任务或关闭自动提炼，不会悄悄用不完整状态继续生成。
+兄弟分支的失败任务不阻塞当前路径；复制会话重映射消息/记忆 ID，不复制运行检查点。
+
+### API 与界面
+
+既有会话、分支、压缩、记忆和生成 API 保留，扩展：
+
+- 会话创建/设置：`mode: assistant|roleplay|writing`、`writing_format: novel|screenplay`、
+  `character_ids: string[]`（本作品的角色卡 ID，最多 12 个）。
+- `GET /conversations/{id}/generations`：最近 20 个未清空运行，便于页面刷新后发现可恢复任务。
+- `GET /conversations/{id}/generations/{request_id}`：阶段、checkpoint ID、工具模式、校验、
+  各阶段用量、实际采用来源、失败原因与 `resumable`。
+- `GET /conversations/{id}/generations/{request_id}/trace`：顺序执行事件。
+- `POST /conversations/{id}/generations/{request_id}/resume`：显式恢复并返回 SSE。
+- `POST /settings/models/{profile_id}/test-tools`：显式测试原生工具能力，保存配置对应的验证状态。
+
+新建会话和会话设置均可选写作格式、关联作品与出场人物；正文仍保存为会话消息，
+支持续写与历史分支，不增加独立文稿编辑器。执行记录抽屉展示工具、审核与阶段用量；
+刷新页面后可发现当前路径的恢复入口。沿用 Vue、Element Plus 和既有布局，不增加监控平台。
+
+### 验收记录
+
+测试入口：`backend/tests/test_harness.py`、`test_harness_protocols.py`、
+既有 conversation/extraction 测试；前端 `frontend/test/conversation.test.js`、
+`frontend/test/conversation-smoke.cjs`。浏览器夹具 `backend/tests/conversation_preview.py`
+完全替换模型；使用临时数据库，并关闭环境中的真实提供商地址/凭据。
+浏览器覆盖 320、390、768、1024、1440px；截图和逐轮结果记录于本地 `.docs/plan/`。
+
+既有失败单独保留：后端两个知识 CRUD 夹具列数错误、人物同名归并、剧情来源排序、
+剧情分组共 5 项；前端 `knowledge.test.js` 引用缺失模块 1 项。未删改这些测试掩盖失败。
+最终测试计数以本次任务记录为准；生产构建仍有既有的大分包警告。
